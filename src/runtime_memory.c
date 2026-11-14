@@ -192,6 +192,9 @@ static void restart_with_range(void) {
 /* The guest range is reserved before anything else can be placed there (runtime_start). */
 void runtime_memory_reserve(void) {
     if (region_count) return;
+    /* lbppc: with LBPPC_APPCONTAINER=1 the game runs in a process of its own inside an AppContainer, and this one
+       waits for it (runtime_container.c): before anything is reserved here. */
+    runtime_container_start();
     const char *reserved=getenv("BB_RANGE_RESERVED");
     if (reserved && reserved[0]=='1') {
         restarted=1;

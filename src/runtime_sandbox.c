@@ -66,6 +66,63 @@ static int sandbox_writable(const char *base, const char *name, int dir) {
     return 0;
 }
 #endif
+/* What the game writes once it runs (runtime_file.c, runtime_savedata.c, runtime_services.c, shadPS4's user folders,
+ * the DLSS data folder), in LBPPC's user folder and in shadPS4's ("user", the same one unless
+ * LBPPC_USER_DIR is set): made and labelled low. visit, if given, sees each one (runtime_container.c grants them to
+ * the AppContainer). */
+int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir)) {
+#ifdef _WIN32
+    static const char *const folders[]={"temp0","download0","data","savedata","cache","shader","log","dlss",
+                                        "screenshots","captures","game_data","temp","home","download",
+                                        "trophy"};
+    /* shadPS4 makes these when first asked for a path, which may be later: made now, left as they are. */
+    static const char *const read_only[]={"sys_modules","cheats","patches","custom_trophy","custom_configs","fonts",
+                                          "custom_modules"};
+    const char *bases[]={user_dir,"user"};
+    int labelled=1;
+    char path[MAX_PATH];
+    for (int b=0;b<2;++b) {
+        if (!bases[b] || !*bases[b] || (b==1 && bases[0] && !_stricmp(bases[0],"user"))) continue;
+        CreateDirectoryA(bases[b],NULL);
+        for (size_t i=0;i<sizeof(folders)/sizeof(*folders);++i) {
+            labelled&=sandbox_writable(bases[b],folders[i],1);
+            snprintf(path,sizeof(path),"%s\\%s",bases[b],folders[i]);
+            if (visit) visit(path,1);
+        }
+        for (size_t i=0;i<sizeof(read_only)/sizeof(*read_only);++i) {
+            snprintf(path,sizeof(path),"%s\\%s",bases[b],read_only[i]);
+            CreateDirectoryA(path,NULL);
+        }
+    }
+    snprintf(path,sizeof(path),"%s\\trophies.log",user_dir && *user_dir ? user_dir : "user");
+    FILE *f=fopen(path,"ab"); /* appended to on each trophy: made now so it can be labelled */
+    if (f) fclose(f);
+    labelled&=sandbox_writable(path,"",0);
+    if (visit) visit(path,0);
+    static const char *const files[]={"lbppc.ini","input.ini"};
+    for (size_t i=0;i<sizeof(files)/sizeof(*files);++i) {
+        labelled&=sandbox_writable(files[i],"",0);
+        if (visit && GetFileAttributesA(files[i])!=INVALID_FILE_ATTRIBUTES) visit(files[i],0);
+    }
+    return labelled;
+#else
+    (void)user_dir; (void)visit;
+    return 0;
+#endif
+}
+int runtime_sandbox_in_container(void) {
+#ifdef _WIN32
+    HANDLE token=NULL;
+    DWORD is_container=0, size=0;
+    if (OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)) {
+        GetTokenInformation(token,TokenIsAppContainer,&is_container,sizeof(is_container),&size);
+        CloseHandle(token);
+    }
+    return is_container!=0;
+#else
+    return 0;
+#endif
+}
 void runtime_sandbox_install(void) {
 #ifdef _WIN32
     static int installed;
@@ -98,38 +155,12 @@ void runtime_sandbox_install(void) {
         local_dlls=0;
     }
 
-    /* What the game writes after this point (runtime_file.c, runtime_savedata.c, runtime_services.c, shadPS4's user
-       folders, the DLSS data folder), in LBPPC's user folder and in shadPS4's (the same one
-       unless LBPPC_USER_DIR is set). */
-    static const char *const folders[]={"temp0","download0","data","savedata","cache","shader","log","dlss",
-                                        "screenshots","captures","game_data","temp","home","download",
-                                        "trophy"};
-    /* shadPS4 makes these when first asked for a path, which may be later: made now, left as they are. */
-    static const char *const read_only[]={"sys_modules","cheats","patches","custom_trophy","custom_configs","fonts",
-                                          "custom_modules"};
-    const char *bases[]={runtime_file_user_dir(),"user"};
-    int labelled=1;
-    for (int b=0;b<2;++b) {
-        if (!bases[b] || !*bases[b] || (b==1 && !_stricmp(bases[0],"user"))) continue;
-        CreateDirectoryA(bases[b],NULL);
-        for (size_t i=0;i<sizeof(folders)/sizeof(*folders);++i) labelled&=sandbox_writable(bases[b],folders[i],1);
-        for (size_t i=0;i<sizeof(read_only)/sizeof(*read_only);++i) {
-            char path[MAX_PATH];
-            snprintf(path,sizeof(path),"%s\\%s",bases[b],read_only[i]);
-            CreateDirectoryA(path,NULL);
-        }
-    }
     const char *user=runtime_file_user_dir();
-    char trophies[MAX_PATH];
-    snprintf(trophies,sizeof(trophies),"%s\\trophies.log",user ? user : "user");
-    FILE *f=fopen(trophies,"ab"); /* appended to on each trophy: made now so it can be labelled */
-    if (f) fclose(f);
-    labelled&=sandbox_writable(trophies,"",0);
-    labelled&=sandbox_writable("lbppc.ini","",0);
-    labelled&=sandbox_writable("input.ini","",0);
+    const int labelled=runtime_sandbox_prepare(user,NULL);
+    const int contained=runtime_sandbox_in_container();
 
-    int low=0;
-    if (labelled) {
+    int low=contained; /* an AppContainer's token is low already (runtime_container.c) */
+    if (labelled && !contained) {
         /* Temporary files go to a folder it can still write. */
         char temp[MAX_PATH];
         snprintf(temp,sizeof(temp),"%s\\temp",user ? user : "user");
@@ -153,12 +184,13 @@ void runtime_sandbox_install(void) {
         if (!low) fprintf(stderr,"Sandbox: integrity not lowered (error %lu)\n",GetLastError());
         if (sid) LocalFree(sid);
         if (token) CloseHandle(token);
-    } else {
+    } else if (!labelled) {
         fputs("Sandbox: low integrity skipped (the folders above could not be labelled): the game keeps the user's "
               "own rights\n",stderr);
     }
     printf("Sandbox: %s; %s; %s\n",no_programs ? "no other programs" : "other programs allowed",
            local_dlls ? "DLLs from local files only" : "DLLs from anywhere",
+           contained ? "AppContainer, reading and writing only what it was given" :
            low ? "low integrity, writing only to its own folders" : "normal integrity");
 #endif
 }

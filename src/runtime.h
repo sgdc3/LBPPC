@@ -40,6 +40,14 @@ void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uin
 void runtime_thread_attach_main(void);
 /* The game process limits itself before its code runs (runtime_sandbox.c); runtime_thread_attach_main applies it. */
 void runtime_sandbox_install(void);
+/* The folders and files the game writes, made and labelled for low integrity under user_dir (and shadPS4's "user");
+ * visit, if given, sees each path (dir 1 for a folder). 1 when every one could be labelled. */
+int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir));
+/* Whether this process runs inside an AppContainer. */
+int runtime_sandbox_in_container(void);
+/* Windows, with LBPPC_APPCONTAINER=1: starts the game again inside an AppContainer and waits for it (then exits
+ * with its code), from runtime_memory_reserve before the PS4 range is reserved. Returns when the game runs here. */
+void runtime_container_start(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
 void runtime_sema_report(void);

@@ -93,6 +93,10 @@ and patches the game loads and LBPPC's program files stay out of its reach, so a
 game could not stay on the PC. The log says
 `Sandbox: no other programs; DLLs from local files only; low integrity, writing only to its own folders`.
 
+`LBPPC_APPCONTAINER=1` (experimental) also runs the game inside an AppContainer, which reads only what LBPPC gives
+it (`docs/appcontainer-broker.md`). For now only the keyboard works there, and it adds a permission for the container
+to the game's folders. The log says `Container: the game runs in AppContainer LBPPC.Game`.
+
 On a drive without Windows permissions (FAT32 or exFAT) the folders can't be labelled, so the low integrity part is
 skipped and the log says why. If something stops working that writes outside those folders, set `LBPPC_SANDBOX=0`
 to rule the sandbox out, and say so in the report.
