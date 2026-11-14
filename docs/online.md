@@ -106,7 +106,7 @@ says `Script guard: on` at the start. Ported from the shadPS4 online patch (Patc
 - The game's server address goes to the configured Refresh server.
 - The PS4 game's PSN login (an authorization code) becomes a PS3-style ticket for the player, which custom servers read.
 - The key the game signs its requests and checks the server's replies with becomes `CustomServerDigest`, the community servers' key; replies are still checked.
-- Refresh disables two endpoints the PS3 game does without (`farc_hashes`, `t_conf`); the PS4 game needs them, so LBPPC answers them with empty, signed replies.
+- Refresh disables two endpoints the PS3 game does without (`farc_hashes`, `t_conf`); the PS4 game needs them, so LBPPC answers them with empty, signed replies when the server answers 410 (an LBPPC server answers them itself: `server/linux/refresh/lbppc-refresh-ps4.patch`, as for the two points below).
 - In co-op, Refresh lets only a room's host update it and refuses the guest's own updates (401). Sony's server never refused them, and a guest's game told "no" often enough would go back to its own Pod alone after a level, its Sackboys frozen. LBPPC answers those refusals with a signed success; the room keeps the host's data.
 - At sign-in the game sends the server its friend list (`npdata`) and takes the friends in the reply as the ones with LBP accounts, the only ones the Pod's friends list shows. Refresh replies with nothing, so LBPPC answers with the friends sent: every LBPPC friend has an account.
 - Without shadNet, PSN itself is stood in for locally: sign-in, empty friend and block lists.
