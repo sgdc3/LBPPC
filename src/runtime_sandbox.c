@@ -70,14 +70,14 @@ static int sandbox_writable(const char *base, const char *name, int dir) {
  * the DLSS data folder), in LBPPC's user folder and in shadPS4's ("user", the same one unless
  * LBPPC_USER_DIR is set): made and labelled low. visit, if given, sees each one (runtime_container.c grants them to
  * the AppContainer). */
-int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir)) {
+int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir, int writable)) {
 #ifdef _WIN32
     static const char *const folders[]={"temp0","download0","data","savedata","cache","shader","log","dlss",
-                                        "screenshots","captures","game_data","temp","home","download",
-                                        "trophy"};
-    /* shadPS4 makes these when first asked for a path, which may be later: made now, left as they are. */
+                                        "screenshots","captures","game_data","temp","home","download","trophy"};
+    /* Read only. shadPS4 makes the first ones when first asked for a path, which may be later: made now. addcont
+       holds the DLC (runtime_content.c). */
     static const char *const read_only[]={"sys_modules","cheats","patches","custom_trophy","custom_configs","fonts",
-                                          "custom_modules"};
+                                          "custom_modules","addcont"};
     const char *bases[]={user_dir,"user"};
     int labelled=1;
     char path[MAX_PATH];
@@ -87,22 +87,25 @@ int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path
         for (size_t i=0;i<sizeof(folders)/sizeof(*folders);++i) {
             labelled&=sandbox_writable(bases[b],folders[i],1);
             snprintf(path,sizeof(path),"%s\\%s",bases[b],folders[i]);
-            if (visit) visit(path,1);
+            if (visit) visit(path,1,1);
         }
         for (size_t i=0;i<sizeof(read_only)/sizeof(*read_only);++i) {
             snprintf(path,sizeof(path),"%s\\%s",bases[b],read_only[i]);
             CreateDirectoryA(path,NULL);
+            if (visit) visit(path,1,0);
         }
     }
     snprintf(path,sizeof(path),"%s\\trophies.log",user_dir && *user_dir ? user_dir : "user");
     FILE *f=fopen(path,"ab"); /* appended to on each trophy: made now so it can be labelled */
     if (f) fclose(f);
     labelled&=sandbox_writable(path,"",0);
-    if (visit) visit(path,0);
+    if (visit) visit(path,0,1);
+    snprintf(path,sizeof(path),"%s\\toggles.txt",user_dir && *user_dir ? user_dir : "user");
+    if (visit && GetFileAttributesA(path)!=INVALID_FILE_ATTRIBUTES) visit(path,0,0); /* read: LBPPC_TOGGLES */
     static const char *const files[]={"lbppc.ini","input.ini"};
     for (size_t i=0;i<sizeof(files)/sizeof(*files);++i) {
         labelled&=sandbox_writable(files[i],"",0);
-        if (visit && GetFileAttributesA(files[i])!=INVALID_FILE_ATTRIBUTES) visit(files[i],0);
+        if (visit && GetFileAttributesA(files[i])!=INVALID_FILE_ATTRIBUTES) visit(files[i],0,1);
     }
     return labelled;
 #else

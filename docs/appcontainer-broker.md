@@ -195,3 +195,7 @@ outer process; lowering the integrity is skipped (an AppContainer token is alrea
 4. Done, differently: no opt-in setting. Isolation is on by default with an opt-out switch on the launcher's Debug
    page; switching it off does not remove the grants or the profile.
 5. The test plan.
+6. Done: the container no longer gets the whole user folder (it holds the launcher's settings): only the folder's
+   own attributes and names, and its game folders one by one (read: `sys_modules`, `cheats`, `patches`, `custom_*`,
+   `fonts`, `addcont`, `toggles.txt`; write: the sandbox's list). Grants from earlier versions on `user/` are taken
+   back once.

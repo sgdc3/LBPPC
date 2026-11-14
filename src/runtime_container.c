@@ -31,6 +31,8 @@ void runtime_container_start(void) {}
 #define CONTAINER_NAME L"LBPPC.Game"
 #define READ_ACCESS (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
 #define WRITE_ACCESS (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_GENERIC_WRITE | DELETE)
+/* The user folder itself: its attributes and the names in it, not its files' contents. */
+#define USER_FOLDER_ACCESS (FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE | READ_CONTROL)
 
 static PSID container;
 static int grant_failures;
@@ -76,9 +78,40 @@ static void grant_w(const wchar_t *path, DWORD mask, int dir) {
     if (sd) LocalFree(sd);
 }
 
-static void grant_written(const char *path, int dir) {
+/* runtime_sandbox_prepare's folders and files: to read, or to read and write. */
+static void grant_prepared(const char *path, int dir, int writable) {
     wchar_t wide[MAX_PATH];
-    if (MultiByteToWideChar(CP_ACP, 0, path, -1, wide, MAX_PATH)) grant_w(wide, WRITE_ACCESS, dir);
+    if (MultiByteToWideChar(CP_ACP, 0, path, -1, wide, MAX_PATH))
+        grant_w(wide, writable ? WRITE_ACCESS : READ_ACCESS, dir);
+}
+
+/* Takes back what this container was given on path itself (what it holds, through inheritance, goes with it). */
+static void revoke_w(const wchar_t *path) {
+    PACL dacl = NULL, updated = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd) !=
+        ERROR_SUCCESS)
+        return;
+    /* Only a grant its contents inherit (the whole folder, as earlier versions gave it): once. */
+    int explicit_grant = 0;
+    for (DWORD i = 0; dacl && i < dacl->AceCount; ++i) {
+        ACE_HEADER *ace;
+        if (GetAce(dacl, i, (void **)&ace) && ace->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+            !(ace->AceFlags & INHERITED_ACE) && (ace->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) &&
+            EqualSid((PSID) & ((ACCESS_ALLOWED_ACE *)ace)->SidStart, container))
+            explicit_grant = 1;
+    }
+    if (explicit_grant) {
+        EXPLICIT_ACCESS_W access = {0};
+        access.grfAccessMode = REVOKE_ACCESS;
+        access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        access.Trustee.ptstrName = (LPWSTR)container;
+        if (SetEntriesInAclW(1, &access, dacl, &updated) == ERROR_SUCCESS)
+            SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, updated, NULL);
+    }
+    if (updated) LocalFree(updated);
+    if (sd) LocalFree(sd);
 }
 
 /* The folder a file is in (or the folder itself), given to read. */
@@ -158,8 +191,8 @@ void runtime_container_start(void) {
     }
 
     /* What it reads: the program and its DLLs, and every file or folder named on the command line (the prepared
-       game in out/, the game, its update, the user folder). What it writes: the folders and files the sandbox labels
-       low (runtime_sandbox.c), which it needs both for. */
+       game in out/, the game, its update). Not the whole user folder, which holds the launcher's settings: its
+       folders and files one by one, to read or to write, as runtime_sandbox_prepare lists them. */
     const ULONGLONG started = GetTickCount64();
     grant_module_folders();
     int argc = 0;
@@ -167,13 +200,21 @@ void runtime_container_start(void) {
     const char *user = "user";
     static char user_narrow[MAX_PATH];
     for (int i = 1; argv && i < argc; ++i) {
+        if (!wcscmp(argv[i], L"--user") && i + 1 < argc) {
+            if (WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, user_narrow, sizeof(user_narrow), NULL, NULL))
+                user = user_narrow;
+            revoke_w(argv[i + 1]); /* given whole by earlier versions */
+            /* The folder itself, not what it holds: its attributes and names (shadPS4 checks it exists). */
+            grant_w(argv[i + 1], USER_FOLDER_ACCESS, 0);
+            ++i;
+            continue;
+        }
         grant_read(argv[i]);
-        if (!wcscmp(argv[i], L"--user") && i + 1 < argc &&
-            WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, user_narrow, sizeof(user_narrow), NULL, NULL))
-            user = user_narrow;
     }
     if (argv) LocalFree(argv);
-    if (!runtime_sandbox_prepare(user, grant_written)) ++grant_failures;
+    revoke_w(L"user");
+    grant_w(L"user", USER_FOLDER_ACCESS, 0);
+    if (!runtime_sandbox_prepare(user, grant_prepared)) ++grant_failures;
     if (grant_failures) {
         give_up("the game's folders could not all be given to it", require);
         return;
