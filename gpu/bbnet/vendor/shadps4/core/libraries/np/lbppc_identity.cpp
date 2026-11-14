@@ -90,6 +90,9 @@ struct State {
     std::string me;
     EVP_PKEY* sign_key = nullptr;
     Key32 sign_pub{};
+    // In an AppContainer the key stays outside, with the broker, which signs for us (runtime_broker.c).
+    int (*remote_sign)(const u8* message, size_t size, u8* signature) = nullptr;
+    Key32 remote_pub{};
     EVP_PKEY* eph_key = nullptr; // X25519, one per run
     Key32 eph_pub{};
     std::map<u64, TusRequest> tus;
@@ -180,6 +183,22 @@ std::array<u8, 64> Sign(EVP_PKEY* key, const u8* data, size_t size) {
     }
     EVP_MD_CTX_free(ctx);
     return sig;
+}
+
+// Whether this process can sign: with its own key, or through the broker's.
+bool CanSignLocked(const State& s) {
+    return s.sign_key != nullptr || s.remote_sign != nullptr;
+}
+bool SignLocked(State& s, const u8* data, size_t size, u8* signature) {
+    if (s.remote_sign) {
+        return s.remote_sign(data, size, signature) != 0;
+    }
+    if (!s.sign_key) {
+        return false;
+    }
+    const auto sig = Sign(s.sign_key, data, size);
+    std::memcpy(signature, sig.data(), sig.size());
+    return true;
 }
 
 bool CheckSignature(const std::vector<Key32>& keys, const u8* data, size_t size, const u8* sig) {
@@ -385,7 +404,7 @@ void HandleChallenge(const u8* p, u32 addr, u16 port) {
     {
         State& s = S();
         std::scoped_lock lock{s.mutex};
-        if (!s.sign_key || !s.eph_key || GetId(p + 41) != s.me) {
+        if (!CanSignLocked(s) || !s.eph_key || GetId(p + 41) != s.me) {
             return;
         }
     }
@@ -412,8 +431,9 @@ void HandleChallenge(const u8* p, u32 addr, u16 port) {
     std::memcpy(answer.data() + 41, p + 25, 16); // the asker
     std::memcpy(answer.data() + 57, p + 57, 6);  // the address asked about
     std::memcpy(answer.data() + 63, s.eph_pub.data(), 32);
-    const auto sig = Sign(s.sign_key, answer.data(), kAnswerSigned);
-    std::memcpy(answer.data() + kAnswerSigned, sig.data(), 64);
+    if (!SignLocked(s, answer.data(), kAnswerSigned, answer.data() + kAnswerSigned)) {
+        return;
+    }
     NpSignaling::Transport::ControlSendTo(answer.data(), static_cast<u32>(answer.size()), addr, port);
 }
 
@@ -490,7 +510,7 @@ const VerifiedPeer* FindVerifiedLocked(State& s, const std::string& id, u32 addr
 
 void SendKeyLocked(State& s, const std::string& to, const VerifiedPeer& peer) {
     Key16 pair{};
-    if (!s.eph_key || !s.sign_key || !PairKey(s.eph_key, peer.eph, s.me, to, &pair)) {
+    if (!s.eph_key || !CanSignLocked(s) || !PairKey(s.eph_key, peer.eph, s.me, to, &pair)) {
         return;
     }
     std::array<u8, kKeySize> msg{};
@@ -507,8 +527,9 @@ void SendKeyLocked(State& s, const std::string& to, const VerifiedPeer& peer) {
              msg.data() + 110)) {
         return;
     }
-    const auto sig = Sign(s.sign_key, msg.data(), kKeySigned);
-    std::memcpy(msg.data() + kKeySigned, sig.data(), 64);
+    if (!SignLocked(s, msg.data(), kKeySigned, msg.data() + kKeySigned)) {
+        return;
+    }
     NpSignaling::Transport::ControlSendTo(msg.data(), static_cast<u32>(msg.size()), peer.addr, peer.port);
 }
 
@@ -585,14 +606,20 @@ void OnSignedIn(std::shared_ptr<ShadNet::ShadNetClient> client) {
     std::scoped_lock lock{s.mutex};
     s.client = client;
     s.me = client->GetNpid();
-    EVP_PKEY_free(s.sign_key);
-    s.sign_key = LoadSigningKey(s.me);
     size_t len = s.sign_pub.size();
-    if (!s.sign_key || EVP_PKEY_get_raw_public_key(s.sign_key, s.sign_pub.data(), &len) != 1) {
-        LOG_ERROR(Lib_NpSignaling, "identity: no key for '{}'; other players will refuse us", s.me);
+    if (s.remote_sign) {
+        // The broker's key (runtime_broker.c): this process never holds the private part.
+        s.sign_pub = s.remote_pub;
+        LOG_INFO(Lib_NpSignaling, "identity: signing through the broker; this PC's key stays outside the game");
+    } else {
         EVP_PKEY_free(s.sign_key);
-        s.sign_key = nullptr;
-        return;
+        s.sign_key = LoadSigningKey(s.me);
+        if (!s.sign_key || EVP_PKEY_get_raw_public_key(s.sign_key, s.sign_pub.data(), &len) != 1) {
+            LOG_ERROR(Lib_NpSignaling, "identity: no key for '{}'; other players will refuse us", s.me);
+            EVP_PKEY_free(s.sign_key);
+            s.sign_key = nullptr;
+            return;
+        }
     }
     if (!s.eph_key) {
         const auto seed = RandomBytes<32>();
@@ -853,6 +880,68 @@ void Step(const std::vector<Peer>& peers) {
         }
     }
     RunDone(done);
+}
+
+// ---- the broker (runtime_broker.c): the key outside the AppContainer ----------------------------------------------
+
+namespace {
+std::mutex g_broker_mutex;
+EVP_PKEY* g_broker_key = nullptr;
+std::string g_broker_name;
+
+bool SameName(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+} // namespace
+
+// Outside: loads (or makes) this PC's key for the account; its public part for the game. 1 on success.
+extern "C" int lbppc_identity_broker_load(const char* online_id, unsigned char* pub) {
+    std::scoped_lock lock{g_broker_mutex};
+    if (!online_id || !*online_id || !pub) {
+        return 0;
+    }
+    EVP_PKEY_free(g_broker_key);
+    g_broker_key = LoadSigningKey(online_id);
+    g_broker_name = online_id;
+    size_t len = 32;
+    if (!g_broker_key || EVP_PKEY_get_raw_public_key(g_broker_key, pub, &len) != 1 || len != 32) {
+        EVP_PKEY_free(g_broker_key);
+        g_broker_key = nullptr;
+        return 0;
+    }
+    return 1;
+}
+
+// Outside: signs for the game, but only what this protocol signs (an answer to a challenge, a session key), whole,
+// and in the account's own name. 1 on success.
+extern "C" int lbppc_identity_broker_sign(const unsigned char* message, size_t size, unsigned char* signature) {
+    std::scoped_lock lock{g_broker_mutex};
+    if (!g_broker_key || !message || !signature || size < 9 || std::memcmp(message, kMagic, 8) != 0) {
+        return 0;
+    }
+    const u8 kind = message[8];
+    const bool answer = kind == kAnswer && size == kAnswerSigned;
+    const bool key = kind == kKey && size == kKeySigned;
+    if (!answer && !key) {
+        return 0;
+    }
+    if (!SameName(GetId(message + (answer ? 25 : 21)), g_broker_name)) {
+        return 0;
+    }
+    const auto sig = Sign(g_broker_key, message, size);
+    std::memcpy(signature, sig.data(), sig.size());
+    return 1;
+}
+
+// Inside: sign through the broker from now on, with this public key.
+extern "C" void lbppc_identity_use_signer(const unsigned char* pub,
+                                          int (*sign)(const unsigned char*, size_t, unsigned char*)) {
+    State& s = S();
+    std::scoped_lock lock{s.mutex};
+    s.remote_sign = sign;
+    std::memcpy(s.remote_pub.data(), pub, 32);
 }
 
 } // namespace Libraries::Np::LbppcIdentity

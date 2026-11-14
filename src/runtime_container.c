@@ -93,7 +93,7 @@ static void grant_prepared(const char *path, int dir, int writable) {
 }
 
 /* Takes back what this container was given on path itself (what it holds, through inheritance, goes with it): any
- * grant, or (any=0) only one its contents inherit (the whole folder, as earlier versions gave it). */
+ * grant, or (any=0) only one its contents inherit (the whole folder, as LBPPC gave it before the broker kept the key). */
 static void revoke_w(const wchar_t *path, int any) {
     PACL dacl = NULL, updated = NULL;
     PSECURITY_DESCRIPTOR sd = NULL;
@@ -167,9 +167,9 @@ static int loopback_server(const char *value) {
 }
 
 /* What it reads: the program and its DLLs, and every file or folder named on the command line (the prepared game in
- * out/, the game, its update). Not the whole user folder, which holds the launcher's settings: its folders and files
- * one by one, to read or to write, as runtime_sandbox_prepare lists them. With taking_back, the same walk takes it
- * all back. */
+ * out/, the game, its update). Not the whole user folder, which holds the launcher's settings and this PC's identity
+ * key (kept by the broker): its folders and files one by one, to read or to write, as runtime_sandbox_prepare lists
+ * them. With taking_back, the same walk takes it all back. */
 static void give_folders(void) {
     grant_module_folders();
     int argc = 0;
@@ -180,7 +180,7 @@ static void give_folders(void) {
         if (!wcscmp(argv[i], L"--user") && i + 1 < argc) {
             if (WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, user_narrow, sizeof(user_narrow), NULL, NULL))
                 user = user_narrow;
-            revoke_w(argv[i + 1], 0); /* given whole by earlier versions */
+            revoke_w(argv[i + 1], 0); /* given whole by LBPPC before the broker kept the key */
             /* The folder itself, not what it holds: its attributes and names (shadPS4 checks it exists). */
             grant_w(argv[i + 1], USER_FOLDER_ACCESS, 0);
             ++i;
@@ -192,6 +192,14 @@ static void give_folders(void) {
     revoke_w(L"user", 0);
     grant_w(L"user", USER_FOLDER_ACCESS, 0);
     if (!runtime_sandbox_prepare(user, grant_prepared)) ++grant_failures;
+    /* The identity key's folder was writable for the container before the broker kept the key: taken back. */
+    const char *key_folders[] = {user, "user"};
+    for (int i = 0; i < 2; ++i) {
+        char narrow[MAX_PATH];
+        wchar_t wide[MAX_PATH];
+        snprintf(narrow, sizeof(narrow), "%s\\online_keys", key_folders[i]);
+        if (MultiByteToWideChar(CP_ACP, 0, narrow, -1, wide, MAX_PATH)) revoke_w(wide, 0);
+    }
 }
 
 /* The game runs outside the container, sandboxed at low integrity (runtime_sandbox.c). Windows keeps a low-integrity
@@ -271,6 +279,7 @@ void runtime_container_start(void) {
     /* The broker's shared memory: controllers in, rumble out (runtime_broker.c). */
     HANDLE section = runtime_broker_create();
     if (!section) fprintf(stderr, "Container: no shared memory for the controller broker (error %lu)\n", GetLastError());
+    runtime_broker_load_identity(); /* this PC's identity key stays out here */
     /* Only the standard handles (run.py's pipe) and the shared memory go in. */
     HANDLE handles[4];
     DWORD handle_count = 0;

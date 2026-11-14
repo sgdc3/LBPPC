@@ -41,8 +41,8 @@ void runtime_thread_attach_main(void);
 /* The game process limits itself before its code runs (runtime_sandbox.c); runtime_thread_attach_main applies it. */
 void runtime_sandbox_install(void);
 /* The folders and files the game uses under user_dir (and shadPS4's "user"), made, and the written ones labelled for
- * low integrity; visit, if given, sees each one the game needs (dir 1 for a folder, writable 0 for read only).
- * 1 when every one could be labelled. */
+ * low integrity; visit, if given, sees each one the game needs (dir 1 for a folder, writable 0 for read only), not
+ * online_keys (the broker keeps the identity key in an AppContainer). 1 when every one could be labelled. */
 int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir, int writable));
 /* Whether this process runs inside an AppContainer. */
 int runtime_sandbox_in_container(void);
@@ -54,6 +54,7 @@ void runtime_container_start(void);
  * that serves it until process ends. Inside: virtual gamepads fed from it. */
 void *runtime_broker_create(void);
 void runtime_broker_child_environment(int set);
+void runtime_broker_load_identity(void);
 void runtime_broker_run(void *process);
 void runtime_broker_attach(void);
 int32_t *runtime_errno(void);

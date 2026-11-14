@@ -15,7 +15,7 @@
  *    program (a shell, something it downloaded). DLLs are never loaded from the network or from a file a
  *    low-integrity process could have written.
  * 2. Low integrity, as a browser's tabs: from then on it writes only where it is let (labelled low): its own folders
- *    in user/ (saves, caches, logs, the game's temp0, download0 and data), user/trophies.log,
+ *    in user/ (saves, caches, logs, the game's temp0, download0 and data, its identity keys), user/trophies.log,
  *    lbppc.ini (the in-game menu) and input.ini. Not the launcher's settings (user/launcher.json), the modules or
  *    patches it loads, its program files, or anything else of the user's: an exploit cannot stay on the PC or plant
  *    code that runs outside. Reading is unchanged. Skipped, and said so, when a folder cannot be labelled (a drive
@@ -67,13 +67,16 @@ static int sandbox_writable(const char *base, const char *name, int dir) {
 }
 #endif
 /* What the game writes once it runs (runtime_file.c, runtime_savedata.c, runtime_services.c, shadPS4's user folders,
- * the DLSS data folder), in LBPPC's user folder and in shadPS4's ("user", the same one unless
+ * lbppc_identity.cpp, the DLSS data folder), in LBPPC's user folder and in shadPS4's ("user", the same one unless
  * LBPPC_USER_DIR is set): made and labelled low. visit, if given, sees each one (runtime_container.c grants them to
  * the AppContainer). */
 int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir, int writable)) {
 #ifdef _WIN32
     static const char *const folders[]={"temp0","download0","data","savedata","cache","shader","log","dlss",
                                         "screenshots","captures","game_data","temp","home","download","trophy"};
+    /* Writable by the low-integrity sandbox, never given to the AppContainer: there the broker keeps the identity
+       key (runtime_broker.c). */
+    static const char *const private_folders[]={"online_keys"};
     /* Read only. shadPS4 makes the first ones when first asked for a path, which may be later: made now. addcont
        holds the DLC (runtime_content.c). */
     static const char *const read_only[]={"sys_modules","cheats","patches","custom_trophy","custom_configs","fonts",
@@ -89,6 +92,8 @@ int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path
             snprintf(path,sizeof(path),"%s\\%s",bases[b],folders[i]);
             if (visit) visit(path,1,1);
         }
+        for (size_t i=0;i<sizeof(private_folders)/sizeof(*private_folders) && !runtime_sandbox_in_container();++i)
+            labelled&=sandbox_writable(bases[b],private_folders[i],1);
         for (size_t i=0;i<sizeof(read_only)/sizeof(*read_only);++i) {
             snprintf(path,sizeof(path),"%s\\%s",bases[b],read_only[i]);
             CreateDirectoryA(path,NULL);

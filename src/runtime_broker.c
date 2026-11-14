@@ -17,6 +17,7 @@
 #ifndef _WIN32
 void *runtime_broker_create(void) { return NULL; }
 void runtime_broker_child_environment(int set) { (void)set; }
+void runtime_broker_load_identity(void) {}
 void runtime_broker_run(void *process) { (void)process; }
 void runtime_broker_attach(void) {}
 #else
@@ -25,9 +26,10 @@ void runtime_broker_attach(void) {}
 #include "gpu/bbgpu.h"
 
 #define BROKER_MAGIC 0x4b52424cu /* 'LBRK' */
-#define BROKER_VERSION 2u
+#define BROKER_VERSION 3u
 #define BROKER_PADS 8
 #define BROKER_EFFECT 64
+#define BROKER_SIGN_MAX 160
 
 typedef struct {
     float x, y, pressure;
@@ -66,6 +68,15 @@ typedef struct {
     volatile LONG gpu_wanted; /* game: the overlay shows GPU usage (the broker measures only then) */
     volatile LONG gpu_seq;    /* broker */
     float gpu_usage;          /* broker: percent, the busiest engine of the game's process; < 0 unknown */
+    /* This PC's identity key stays with the broker (lbppc_identity.cpp): its public part, and a channel the game
+       asks it to sign through, one message at a time. */
+    volatile LONG key_ready;                       /* broker */
+    uint8_t key_pub[32];                           /* broker */
+    volatile LONG sign_request, sign_done;         /* game counts requests up; the broker answers each */
+    uint32_t sign_size;                            /* game */
+    uint8_t sign_message[BROKER_SIGN_MAX];         /* game */
+    volatile LONG sign_ok;                         /* broker */
+    uint8_t sign_signature[64];                    /* broker */
 } BrokerShared;
 
 static BrokerShared *shared;
@@ -108,6 +119,36 @@ void *runtime_broker_create(void) {
 
 /* Inside, SDL sees only the virtual pads: every real joystick backend off (an Xbox pad through XInput would
    otherwise count twice). Set for the game's start only; this process's own SDL needs them. */
+/* This PC's identity key for the account the game signs in with, kept here (the game can't read its folder):
+   before the game starts, so its public part is there when the game signs in. */
+void runtime_broker_load_identity(void) {
+    const char *name = getenv("BB_SHADNET_NPID");
+    if (!shared || !name || !*name) return;
+    if (lbppc_identity_broker_load(name, shared->key_pub)) {
+        InterlockedExchange(&shared->key_ready, 1);
+        printf("Broker: this PC's identity key is kept outside the game\n");
+    } else {
+        fprintf(stderr, "Broker: no identity key; the game keeps none either, so other players will refuse it\n");
+    }
+    fflush(stdout);
+}
+
+/* One request from the game, if there is one: checked and signed by lbppc_identity_broker_sign. */
+static void answer_sign_request(void) {
+    const LONG request = shared->sign_request;
+    if (request == shared->sign_done) return;
+    MemoryBarrier();
+    uint8_t message[BROKER_SIGN_MAX];
+    const uint32_t size = shared->sign_size;
+    int ok = 0;
+    if (size && size <= sizeof(message)) {
+        memcpy(message, shared->sign_message, size);
+        ok = lbppc_identity_broker_sign(message, size, shared->sign_signature);
+    }
+    InterlockedExchange(&shared->sign_ok, ok);
+    InterlockedExchange(&shared->sign_done, request);
+}
+
 void runtime_broker_child_environment(int set) {
     static const char *const hints[] = {"SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_RAWINPUT", "SDL_JOYSTICK_XINPUT",
                                         "SDL_JOYSTICK_DIRECTINPUT", "SDL_JOYSTICK_WGI", "SDL_JOYSTICK_GAMEINPUT"};
@@ -279,6 +320,7 @@ void runtime_broker_run(void *process) {
             publish_state(&slots[i], i);
             apply_requests(&slots[i], i);
         }
+        answer_sign_request();
         InterlockedExchange64(&shared->heartbeat, (LONG64)SDL_GetTicks());
     }
     for (int i = 0; i < BROKER_PADS; ++i)
@@ -412,6 +454,29 @@ static DWORD WINAPI follow_slots(void *unused) {
     return 0;
 }
 
+/* Inside: signs through the broker, one request at a time; the broker answers within its 2 ms loop. */
+static SRWLOCK sign_lock = SRWLOCK_INIT;
+static int broker_sign(const unsigned char *message, size_t size, unsigned char *signature) {
+    if (!message || !signature || !size || size > BROKER_SIGN_MAX) return 0;
+    AcquireSRWLockExclusive(&sign_lock);
+    memcpy(shared->sign_message, message, size);
+    shared->sign_size = (uint32_t)size;
+    const LONG request = InterlockedIncrement(&shared->sign_request);
+    int ok = 0;
+    const ULONGLONG deadline = GetTickCount64() + 1000;
+    while (GetTickCount64() < deadline) {
+        if (shared->sign_done == request) {
+            MemoryBarrier();
+            ok = shared->sign_ok != 0;
+            if (ok) memcpy(signature, shared->sign_signature, 64);
+            break;
+        }
+        Sleep(1);
+    }
+    ReleaseSRWLockExclusive(&sign_lock);
+    return ok;
+}
+
 /* The overlay's GPU usage inside: the broker's measurement of this process. */
 static float broker_gpu_load(void) {
     InterlockedExchange(&shared->gpu_wanted, 1);
@@ -432,6 +497,7 @@ void runtime_broker_attach(void) {
     }
     shared = view;
     bbgpu_set_gpu_load_source(broker_gpu_load);
+    if (shared->key_ready) lbppc_identity_use_signer(shared->key_pub, broker_sign);
     HANDLE thread = CreateThread(NULL, 0, follow_slots, NULL, 0, NULL);
     if (thread) CloseHandle(thread);
 }

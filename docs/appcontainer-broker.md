@@ -198,7 +198,12 @@ outer process; lowering the integrity is skipped (an AppContainer token is alrea
 4. Done, differently: no opt-in setting. Isolation is on by default with an opt-out switch on the launcher's Debug
    page; switching it off does not remove the grants or the profile.
 5. The test plan.
-6. Done: the container no longer gets the whole user folder (it holds the launcher's settings): only the folder's
-   own attributes and names, and its game folders one by one (read: `sys_modules`, `cheats`, `patches`, `custom_*`,
-   `fonts`, `addcont`, `toggles.txt`; write: the sandbox's list). Grants from earlier versions on `user/` are taken
-   back once.
+6. Done: this PC's identity key stays with the broker. The container no longer gets the whole user folder (it holds
+   the launcher's settings and the key): only the folder's own attributes and names, and its game folders one by
+   one (read: `sys_modules`, `cheats`, `patches`, `custom_*`, `fonts`, `addcont`, `toggles.txt`; write: the
+   sandbox's list). `online_keys` is never given; grants from earlier versions on `user/` and `online_keys` are taken
+   back once. The broker loads the key before the game starts and publishes its public part in the section; the game
+   asks it to sign through a request channel there (`sign_request`/`sign_done`), and `lbppc_identity_broker_sign`
+   signs only the protocol's two messages, whole, in the account's own name. A compromised game can still ask for
+   signatures while it runs and publish another key over its shadNet session: closing that needs the password out of
+   the game too (next).

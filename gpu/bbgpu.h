@@ -80,6 +80,12 @@ void bbgpu_set_p2p_key_slot(uint8_t *slot);
  * counters; a few milliseconds, not for a time-critical thread). And the source the overlay's GPU usage reads instead
  * of those counters, which an AppContainer can't read (runtime_broker.c). */
 float bbgpu_gpu_load_for_process(uint32_t pid);
+/* lbppc: this PC's identity key held outside the AppContainer (lbppc_identity.cpp, runtime_broker.c). Outside: load
+ * (or make) the account's key and give its 32-byte public part; sign a message for the game (only the protocol's own
+ * messages, in the account's name; 64-byte signature). Inside: sign through sign from now on. 1 on success. */
+int lbppc_identity_broker_load(const char *online_id, unsigned char *pub);
+int lbppc_identity_broker_sign(const unsigned char *message, size_t size, unsigned char *signature);
+void lbppc_identity_use_signer(const unsigned char *pub, int (*sign)(const unsigned char *, size_t, unsigned char *));
 void bbgpu_set_gpu_load_source(float (*source)(void));
 /* Closes the game as the window's close button does (Quit Game in the pause menu). Any thread. */
 void bbgpu_request_quit(void);
