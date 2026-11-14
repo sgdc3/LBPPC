@@ -30,6 +30,9 @@ void OnSignedIn(std::shared_ptr<ShadNet::ShadNetClient> client);
 // A shadNet reply; true when it answered one of our TUS requests.
 bool OnAsyncReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType error,
                   const std::vector<u8>& body);
+// The secret an LBPPC server gave our session for its STUN pings, when online_id is us (else empty: other servers
+// and other names). The server takes a ping as that account's only with it, so nobody else can set where it is.
+std::string StunToken(const std::string& online_id);
 // A UDP packet on the signaling sockets; true when it was ours (addr/port network order).
 bool HandlePacket(const u8* data, size_t size, u32 addr, u16 port);
 

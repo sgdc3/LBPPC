@@ -1,6 +1,7 @@
-diff -ruN a/src/admin_api.cpp b/src/admin_api.cpp
---- a/src/admin_api.cpp	2026-11-13 03:07:15.201021800 -0330
-+++ b/src/admin_api.cpp	2026-11-13 11:21:20.622881800 -0330
+diff --git a/src/admin_api.cpp b/src/admin_api.cpp
+index 11e7a91..ac84bae 100644
+--- a/src/admin_api.cpp
++++ b/src/admin_api.cpp
 @@ -1,6 +1,7 @@
  // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
  // SPDX-License-Identifier: GPL-2.0-or-later
@@ -9,7 +10,7 @@ diff -ruN a/src/admin_api.cpp b/src/admin_api.cpp
  
  #include <cmath>
  
-@@ -893,6 +894,78 @@
+@@ -893,6 +894,78 @@ void AdminApiServer::RegisterRoutes() {
              return JsonOk(body);
          });
  
@@ -88,10 +89,11 @@ diff -ruN a/src/admin_api.cpp b/src/admin_api.cpp
      // GET /admin/v1/version
      m_http->route("/admin/v1/version", QHttpServerRequest::Method::Get,
                    [](const QHttpServerRequest&) {
-diff -ruN a/src/client_session.cpp b/src/client_session.cpp
---- a/src/client_session.cpp	2026-11-13 03:07:15.209046300 -0330
-+++ b/src/client_session.cpp	2026-11-13 11:21:20.645443000 -0330
-@@ -66,9 +66,41 @@
+diff --git a/src/client_session.cpp b/src/client_session.cpp
+index 2138c6c..f48decc 100644
+--- a/src/client_session.cpp
++++ b/src/client_session.cpp
+@@ -66,9 +66,41 @@ void ClientSession::Start() {
      qInfo() << "Client connected (" << mode << ") from" << m_socket->peerAddress().toString();
  }
  
@@ -133,20 +135,40 @@ diff -ruN a/src/client_session.cpp b/src/client_session.cpp
      while (m_readBuf.size() >= static_cast<int>(HEADER_SIZE)) {
          // Parse header
          const uint8_t* hdr = reinterpret_cast<const uint8_t*>(m_readBuf.constData());
-diff -ruN a/src/client_session.h b/src/client_session.h
---- a/src/client_session.h	2026-11-13 03:07:15.216079200 -0330
-+++ b/src/client_session.h	2026-11-13 11:21:20.667835700 -0330
-@@ -96,6 +96,9 @@
+@@ -542,6 +574,16 @@ void ClientSession::CleanupOnDisconnect() {
+             m_shared->npidToUserId.remove(m_info.npid);
+         }
+     }
++    // LBPPC: where it was is no longer where it is.
++    {
++        QWriteLocker lk(&m_shared->matching.udpLock);
++        for (auto it = m_shared->matching.udpExt.begin(); it != m_shared->matching.udpExt.end();) {
++            if (it.key().compare(m_info.npid, Qt::CaseInsensitive) == 0)
++                it = m_shared->matching.udpExt.erase(it);
++            else
++                ++it;
++        }
++    }
+ 
+     // Drop this session from live usage stats (decrements total + its game tally).
+     m_shared->UsageOnLogout(m_info.userId);
+diff --git a/src/client_session.h b/src/client_session.h
+index f2dc23c..c250ad3 100644
+--- a/src/client_session.h
++++ b/src/client_session.h
+@@ -96,6 +96,11 @@ struct SharedState {
          Matching2Access matching2Access = Matching2Access::Normal;
          QString clientVersion;
          bool versionReported = false;
 +        // LBPPC: the address this session signed in from (IPv4 as a.b.c.d), so the game server can
 +        // accept a game login only from where the account is signed in (GET /admin/v1/sessions/check).
 +        QString peerIp;
++        // LBPPC: the secret this session's STUN pings carry (stun_server.cpp), given at login.
++        QByteArray stunToken;
          std::function<void()> recheckVersion;
      };
      QHash<int64_t, ClientEntry> clients;
-@@ -410,6 +413,18 @@
+@@ -410,6 +415,19 @@ private:
      std::optional<PendingOnline> m_pendingOnline;
      bool m_registered = false; // in m_shared->clients (shown online)
      QByteArray m_readBuf;
@@ -154,6 +176,7 @@ diff -ruN a/src/client_session.h b/src/client_session.h
 +    // stating the player's address first in a PROXY protocol (v1) line, which is only believed
 +    // from a loopback peer. m_proxyChecked: the start of the stream was looked at for it.
 +    QString m_peerIp;
++    QByteArray m_stunToken; // LBPPC: see SharedState::ClientEntry::stunToken
 +    bool m_proxyChecked = false;
 +
 +public:
@@ -165,10 +188,19 @@ diff -ruN a/src/client_session.h b/src/client_session.h
      std::unique_ptr<Database> m_db;
      ClientInfo m_info;
      MatchingSessionState m_matching;
-diff -ruN a/src/cmd_account.cpp b/src/cmd_account.cpp
---- a/src/cmd_account.cpp	2026-11-13 03:07:15.222579400 -0330
-+++ b/src/cmd_account.cpp	2026-11-13 11:21:20.689377500 -0330
-@@ -7,6 +7,8 @@
+diff --git a/src/cmd_account.cpp b/src/cmd_account.cpp
+index cc655d1..b8cb3b8 100644
+--- a/src/cmd_account.cpp
++++ b/src/cmd_account.cpp
+@@ -1,12 +1,16 @@
+ // SPDX-FileCopyrightText: Copyright 2019-2026 rpcsn Project
+ // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
++#include <cstring>
+ #include <tuple>
++#include <QRandomGenerator>
+ #include <QRegularExpression>
+ #include <QDateTime>
  #include <QDebug>
  #include <QTimer>
  #include "client_session.h"
@@ -177,7 +209,7 @@ diff -ruN a/src/cmd_account.cpp b/src/cmd_account.cpp
  #include "proto_utils.h"
  #include "shadnet.pb.h"
  
-@@ -34,9 +36,25 @@
+@@ -34,9 +38,25 @@ ErrorType ClientSession::CmdCreate(StreamExtractor& data, QByteArray& reply) {
      if (!IsValidNpid(npid))
          return ErrorType::InvalidInput;
  
@@ -203,7 +235,7 @@ diff -ruN a/src/cmd_account.cpp b/src/cmd_account.cpp
      // Check banned email domain.
      int at = email.indexOf('@');
      if (at >= 0) {
-@@ -61,7 +79,8 @@
+@@ -61,7 +81,8 @@ ErrorType ClientSession::CmdCreate(StreamExtractor& data, QByteArray& reply) {
          }
      }
  
@@ -213,7 +245,7 @@ diff -ruN a/src/cmd_account.cpp b/src/cmd_account.cpp
      return ErrorType::NoError;
  }
  
-@@ -77,10 +96,18 @@
+@@ -77,10 +98,18 @@ ErrorType ClientSession::CmdLogin(StreamExtractor& data, QByteArray& reply) {
      QString npid = QString::fromStdString(req.npid());
      QString token = QString::fromStdString(req.token());
  
@@ -233,18 +265,72 @@ diff -ruN a/src/cmd_account.cpp b/src/cmd_account.cpp
          return ErrorType::LoginInvalidPassword;
      }
      const UserRecord& user = *userOpt;
-@@ -214,6 +241,8 @@
+@@ -152,6 +181,14 @@ ErrorType ClientSession::CmdLogin(StreamExtractor& data, QByteArray& reply) {
+     for (const auto& [id, blockedNpid] : rels.blocked)
+         pb.add_blocked(blockedNpid.toStdString());
+ 
++    // LBPPC: a secret for this session's STUN pings, so nobody else can set where it is.
++    m_stunToken.resize(16);
++    for (int i = 0; i < 16; i += 4) {
++        const quint32 r = QRandomGenerator::system()->generate();
++        std::memcpy(m_stunToken.data() + i, &r, 4);
++    }
++    pb.set_lbppc_stun_token(m_stunToken.constData(), m_stunToken.size());
++
+     appendProto(reply, pb);
+ 
+     PendingOnline pending;
+@@ -214,6 +251,9 @@ void ClientSession::RegisterOnline() {
          entry.titleName = pending.titleName;
          entry.clientVersion = m_reportedVersion;
          entry.versionReported = m_versionReported;
 +        // LBPPC: where this session signed in from (the player's address, through nginx).
 +        entry.peerIp = PeerIp();
++        entry.stunToken = m_stunToken;
          entry.send = [this](QByteArray pkt) {
              QMetaObject::invokeMethod(
                  this, [this, pkt]() { SendPacket(pkt); }, Qt::QueuedConnection);
-diff -ruN a/src/lbppc_guard.h b/src/lbppc_guard.h
---- a/src/lbppc_guard.h	1969-12-31 20:30:00.000000000 -0330
-+++ b/src/lbppc_guard.h	2026-11-13 11:21:20.711430600 -0330
+diff --git a/src/cmd_matching.cpp b/src/cmd_matching.cpp
+index 7eb1a5c..5810b45 100644
+--- a/src/cmd_matching.cpp
++++ b/src/cmd_matching.cpp
+@@ -1191,6 +1191,31 @@ ErrorType ClientSession::CmdRequestSignalingInfos(StreamExtractor& data, QByteAr
+ 
+     QString targetNpid = QString::fromStdString(req.target_npid());
+ 
++    // LBPPC: a player's address only for its friends and for players in a room with it, not for anyone who asks.
++    bool allowed = false;
++    {
++        QReadLocker lk(&m_shared->clientsLock);
++        const auto self = m_shared->clients.constFind(m_info.userId);
++        if (self != m_shared->clients.constEnd()) {
++            for (const QString& friendNpid : self->friends)
++                allowed |= friendNpid.compare(targetNpid, Qt::CaseInsensitive) == 0;
++        }
++    }
++    if (!allowed) {
++        QReadLocker lk(&m_shared->matching.roomsLock);
++        for (auto it = m_shared->matching.rooms.constBegin();
++             it != m_shared->matching.rooms.constEnd() && !allowed; ++it) {
++            if (it.key().first == m_matching.matchingKey && it.value().findByNpid(m_info.npid) &&
++                it.value().findByNpid(targetNpid))
++                allowed = true;
++        }
++    }
++    if (!allowed) {
++        qWarning().noquote() << "LBPPC: refused" << m_info.npid << "the address of" << targetNpid
++                             << "(not a friend, no shared room)";
++        return ErrorType::NotFound;
++    }
++
+     QString targetIp;
+     uint16_t targetPort = 0;
+     {
+diff --git a/src/lbppc_guard.h b/src/lbppc_guard.h
+new file mode 100644
+index 0000000..ae71a57
+--- /dev/null
++++ b/src/lbppc_guard.h
 @@ -0,0 +1,84 @@
 +// LBPPC: limits on password guessing and sign-ups, per player address (ClientSession::PeerIp, the player's own
 +// address through nginx) and per account name. In memory: a restart clears them.
@@ -330,9 +416,11 @@ diff -ruN a/src/lbppc_guard.h b/src/lbppc_guard.h
 +}
 +
 +} // namespace LbppcGuard
-diff -ruN a/src/lbppc_names.h b/src/lbppc_names.h
---- a/src/lbppc_names.h	1969-12-31 20:30:00.000000000 -0330
-+++ b/src/lbppc_names.h	2026-11-13 11:21:20.732978600 -0330
+diff --git a/src/lbppc_names.h b/src/lbppc_names.h
+new file mode 100644
+index 0000000..9d29b20
+--- /dev/null
++++ b/src/lbppc_names.h
 @@ -0,0 +1,144 @@
 +// LBPPC: names nobody can register (shadNet accounts, and Refresh, which asks shadNet: GET /admin/v1/names/check).
 +// The list is a text file, /etc/lbppc/blocked-names.txt (LBPPC_BLOCKED_NAMES overrides), read again whenever it
@@ -478,3 +566,63 @@ diff -ruN a/src/lbppc_names.h b/src/lbppc_names.h
 +}
 +
 +} // namespace LbppcNames
+diff --git a/src/shadnet.proto b/src/shadnet.proto
+index 5db29f6..dfd8b93 100644
+--- a/src/shadnet.proto
++++ b/src/shadnet.proto
+@@ -47,6 +47,9 @@ message LoginReply {
+     repeated string      friend_requests_sent     = 4;
+     repeated string      friend_requests_received = 5;
+     repeated string      blocked                  = 6;
++    // LBPPC: this session's secret for its STUN pings (16 bytes after the 21 the ping has), so that
++    // nobody else can set where the account is.
++    bytes                lbppc_stun_token         = 100;
+ }
+ 
+ message RegistrationRequest {
+diff --git a/src/stun_server.cpp b/src/stun_server.cpp
+index dda1d03..196f4ee 100644
+--- a/src/stun_server.cpp
++++ b/src/stun_server.cpp
+@@ -1,6 +1,8 @@
+ // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #include <cstring>
++#include <QDateTime>
++#include <QHash>
+ #include <QDebug>
+ #include <QtEndian>
+ #include "stream_extractor.h"
+@@ -98,6 +100,32 @@ void StunServer::HandleStunPing(const QByteArray& data, const QHostAddress& send
+     if (extIpStr.startsWith("::ffff:"))
+         extIpStr = extIpStr.mid(7);
+ 
++    // LBPPC: only that name's signed-in session says where it is: with the token it got at login after the 21
++    // bytes, or, from a client without one, from the address it signed in from. Anyone else's ping would make
++    // the others connect to them instead (RequestSignalingInfos, room member data, the relay).
++    bool allowed = false;
++    {
++        const bool hasToken = data.size() >= 21 + 16;
++        const QByteArray token = hasToken ? data.mid(21, 16) : QByteArray();
++        QReadLocker lk(&m_shared->clientsLock);
++        for (const auto& entry : m_shared->clients) {
++            if (entry.npid.compare(npid, Qt::CaseInsensitive) != 0)
++                continue;
++            allowed |= hasToken ? (!entry.stunToken.isEmpty() && token == entry.stunToken)
++                                : entry.peerIp == extIpStr;
++        }
++    }
++    if (!allowed) {
++        static QHash<QString, qint64> lastWarned; // once a minute per name (this socket's thread only)
++        const qint64 now = QDateTime::currentSecsSinceEpoch();
++        if (now - lastWarned.value(npid, 0) >= 60) {
++            lastWarned.insert(npid, now);
++            qWarning().noquote() << "LBPPC: ignored a STUN ping for" << npid << "from" << extIpStr
++                                 << "(not that account's session)";
++        }
++        return;
++    }
++
+     qInfo() << "STUN ping: npid=" << npid << "ext=" << extIpStr << ":" << senderPort;
+ 
+     // Record external endpoint

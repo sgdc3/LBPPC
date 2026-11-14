@@ -607,6 +607,12 @@ void OnSignedIn(std::shared_ptr<ShadNet::ShadNetClient> client) {
     SendTusReadLocked(s, "", TusRequest::Kind::ReadOwn);
 }
 
+std::string StunToken(const std::string& online_id) {
+    State& s = S();
+    std::scoped_lock lock{s.mutex};
+    return s.client && online_id == s.me ? s.client->GetStunToken() : std::string();
+}
+
 bool OnAsyncReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType error, const std::vector<u8>& body) {
     if (cmd != ShadNet::CommandType::TusGetData && cmd != ShadNet::CommandType::TusSetData) {
         return false;

@@ -260,8 +260,17 @@ bool PublishSignalingInfo(const OrbisNpOnlineId& online_id) {
     std::memcpy(ping.online_id, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
     ping.local_ip = NpSignaling::Transport::LocalAddr();
 
-    const int rc =
-        NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
+    // lbppc: on an LBPPC server, the session's token after the 21 bytes (lbppc_identity.h, StunToken); other
+    // servers read the first 21 and ignore it.
+    u8 packet[sizeof(ping) + 16];
+    std::memcpy(packet, &ping, sizeof(ping));
+    u32 size = sizeof(ping);
+    const std::string token = LbppcIdentity::StunToken(OnlineIdString(online_id));
+    if (token.size() == 16) {
+        std::memcpy(packet + sizeof(ping), token.data(), 16);
+        size += 16;
+    }
+    const int rc = NpSignaling::Transport::SignalingSendTo(packet, size, server_addr, server_udp);
     LOG_DEBUG(Lib_NpSignaling, "PublishSignalingInfo: id='{}' server={:#x}:{} local_ip={:#x} rc={}",
               OnlineIdString(online_id), server_addr, Net::sceNetNtohs(server_udp), ping.local_ip,
               rc);

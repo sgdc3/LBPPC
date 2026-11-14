@@ -47,6 +47,9 @@ message LoginReply {
     repeated string      friend_requests_sent     = 4;
     repeated string      friend_requests_received = 5;
     repeated string      blocked                  = 6;
+    // LBPPC servers: this session's secret for its STUN pings (16 bytes after the 21 the ping has), so that
+    // nobody else can set where the account is. Empty from other servers.
+    bytes                lbppc_stun_token         = 100;
 }
 
 message RegistrationRequest {
