@@ -48,6 +48,13 @@ int runtime_sandbox_in_container(void);
 /* Windows, with LBPPC_APPCONTAINER=1: starts the game again inside an AppContainer and waits for it (then exits
  * with its code), from runtime_memory_reserve before the PS4 range is reserved. Returns when the game runs here. */
 void runtime_container_start(void);
+/* The controller broker for the game in an AppContainer (runtime_broker.c). Outside: the shared memory (its handle,
+ * to pass in; also named in LBPPC_BROKER), the game's environment (set before its start, cleared after), and the loop
+ * that serves it until process ends. Inside: virtual gamepads fed from it. */
+void *runtime_broker_create(void);
+void runtime_broker_child_environment(int set);
+void runtime_broker_run(void *process);
+void runtime_broker_attach(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
 void runtime_sema_report(void);

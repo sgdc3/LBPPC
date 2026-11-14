@@ -134,7 +134,10 @@ void runtime_container_start(void) {
     const char *setting = getenv("LBPPC_APPCONTAINER");
     if (!setting || !(setting[0] == '1' || !strcmp(setting, "require"))) return;
     const int require = !strcmp(setting, "require");
-    if (runtime_sandbox_in_container()) return; /* the game, already inside */
+    if (runtime_sandbox_in_container()) { /* the game, already inside: its controllers come from the broker */
+        runtime_broker_attach();
+        return;
+    }
     const char *inside = getenv("LBPPC_CONTAINER");
     if (inside && inside[0] == '1') return;     /* started for it, but not in one: run as is */
 
@@ -190,8 +193,11 @@ void runtime_container_start(void) {
        this executable is linked without it anyway. */
     static DWORD64 policy = PROCESS_CREATION_MITIGATION_POLICY_HIGH_ENTROPY_ASLR_ALWAYS_OFF |
                             PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_OFF;
-    /* Only the standard handles go in (run.py's pipe). */
-    HANDLE handles[3];
+    /* The broker's shared memory: controllers in, rumble out (runtime_broker.c). */
+    HANDLE section = runtime_broker_create();
+    if (!section) fprintf(stderr, "Container: no shared memory for the controller broker (error %lu)\n", GetLastError());
+    /* Only the standard handles (run.py's pipe) and the shared memory go in. */
+    HANDLE handles[4];
     DWORD handle_count = 0;
     const DWORD which[] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
     for (int i = 0; i < 3; ++i) {
@@ -201,6 +207,7 @@ void runtime_container_start(void) {
         if (h && h != INVALID_HANDLE_VALUE && !seen && SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
             handles[handle_count++] = h;
     }
+    if (section) handles[handle_count++] = section;
     const DWORD attribute_count = handle_count ? 3 : 2;
     SIZE_T size = 0;
     InitializeProcThreadAttributeList(NULL, attribute_count, 0, &size);
@@ -225,6 +232,7 @@ void runtime_container_start(void) {
         return;
     }
     SetEnvironmentVariableW(L"LBPPC_CONTAINER", L"1");
+    runtime_broker_child_environment(1);
     wchar_t *command = _wcsdup(GetCommandLineW());
     PROCESS_INFORMATION pi;
     fflush(stdout);
@@ -235,6 +243,7 @@ void runtime_container_start(void) {
     const DWORD create_error = GetLastError();
     free(command);
     SetEnvironmentVariableW(L"LBPPC_CONTAINER", NULL);
+    runtime_broker_child_environment(0);
     DeleteProcThreadAttributeList(si.lpAttributeList);
     if (!created) {
         char why[64];
@@ -249,11 +258,10 @@ void runtime_container_start(void) {
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (job && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
         AssignProcessToJobObject(job, pi.hProcess);
-    printf("Container: the game runs in AppContainer LBPPC.Game (keyboard only: controllers need the broker, "
-           "docs/appcontainer-broker.md)\n");
+    printf("Container: the game runs in AppContainer LBPPC.Game; controllers through the broker\n");
     fflush(stdout);
     ResumeThread(pi.hThread);
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    runtime_broker_run(pi.hProcess); /* until the game ends */
     DWORD code = 21;
     GetExitCodeProcess(pi.hProcess, &code);
     ExitProcess(code);

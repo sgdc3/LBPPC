@@ -1,7 +1,7 @@
 # Running the game in an AppContainer: the broker (design)
 
-Status: step 1 is in (`src/runtime_container.c`, `LBPPC_APPCONTAINER=1`: the game runs inside, keyboard only);
-steps 2 to 5 are the design below. It comes from a prototype that ran LBP3 1.28 inside an AppContainer on 2026-11-14 (RTX 4080 Laptop,
+Status: steps 1 and 2 are in (`src/runtime_container.c`, `src/runtime_broker.c`, `LBPPC_APPCONTAINER=1`: the game
+runs inside, controllers through the broker); steps 3 to 5 are the design below. It comes from a prototype that ran LBP3 1.28 inside an AppContainer on 2026-11-14 (RTX 4080 Laptop,
 Windows 11): Vulkan, the window, FSR 3.1, NVIDIA Reflex, WASAPI audio, save data and the shader caches all worked.
 Two things did not: the controller (no DualSense) and the overlay's GPU usage (empty). This document is how LBPPC
 would fix both with a broker, and everything else an AppContainer needs.
@@ -184,7 +184,10 @@ outer process; lowering the integrity is skipped (an AppContainer token is alrea
 1. Done: `runtime_container.c`, outer side: profile, grants, launch, exit code; no broker yet (keyboard only). Tested
    offline: the game runs inside at 30 FPS, saves mount, caches are written, the exit code reaches `run.py`, nothing
    is left running; granting takes about 3.5 s the first time and 30 ms after. The shared section comes with step 2.
-2. Broker loop and inner virtual gamepads: input, then rumble, LED, effects, sensors.
+2. Done: broker loop and inner virtual gamepads: input, rumble, trigger rumble, LED, effects, motion sensors, touchpad.
+   The section has no GPU field yet (step 3). Tested: a DualSense is opened by the broker, attached inside and seen
+   by `runtime_pad.c` as "DualSense Wireless Controller: ps5" with motion sensors; input is 0.4-0.5 ms old when the
+   game reads it, as without the container. Rumble, the touchpad and tilt need a hand test.
 3. GPU usage through the broker; the overlay switch.
 4. Launcher setting with the explanation, removal of grants and profile.
 5. The test plan; then decide whether it can be on by default.
