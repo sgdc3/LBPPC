@@ -93,9 +93,11 @@ and patches the game loads and LBPPC's program files stay out of its reach, so a
 game could not stay on the PC. The log says
 `Sandbox: no other programs; DLLs from local files only; low integrity, writing only to its own folders`.
 
-`LBPPC_APPCONTAINER=1` (experimental) also runs the game inside an AppContainer, which reads only what LBPPC gives
-it (`docs/appcontainer-broker.md`). Controllers reach it through a broker outside the container (`src/runtime_broker.c`);
-the overlay's GPU usage doesn't work there yet, and it adds a permission for the container to the game's folders. The log says `Container: the game runs in AppContainer LBPPC.Game`.
+The game also runs inside an AppContainer, which reads only what LBPPC gives it (`docs/appcontainer-broker.md`):
+LBPPC adds a permission for it to its own folders and to the game's. Controllers and the overlay's GPU usage, which
+an AppContainer can't read, come in through a broker outside it (`src/runtime_broker.c`). The log says
+`Container: the game runs in AppContainer LBPPC.Game; controllers through the broker`. A server on this PC (an
+AppContainer can't reach it) runs the game without it. The Debug page's "Game isolation" turns it off.
 
 On a drive without Windows permissions (FAT32 or exFAT) the folders can't be labelled, so the low integrity part is
 skipped and the log says why. If something stops working that writes outside those folders, set `LBPPC_SANDBOX=0`
@@ -114,6 +116,7 @@ larger.
 | Skip GPU readbacks (on) | Not a log: faster busy levels. Turn it off if something flickers or draws wrongly. |
 | Optimization switches | Reads `user/toggles.txt` while the game runs; each bit turns an optimization off. |
 | Friends menu log | `Friends (menu):` lines while online: what the game's Friends page holds. |
+| Game isolation (on) | Not a log: the game runs in an AppContainer (see The sandbox). Turn it off to rule it out when something stops working. |
 
 ## Tips
 

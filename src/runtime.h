@@ -45,7 +45,7 @@ void runtime_sandbox_install(void);
 int runtime_sandbox_prepare(const char *user_dir, void (*visit)(const char *path, int dir));
 /* Whether this process runs inside an AppContainer. */
 int runtime_sandbox_in_container(void);
-/* Windows, with LBPPC_APPCONTAINER=1: starts the game again inside an AppContainer and waits for it (then exits
+/* Windows, unless LBPPC_APPCONTAINER=0: starts the game again inside an AppContainer and waits for it (then exits
  * with its code), from runtime_memory_reserve before the PS4 range is reserved. Returns when the game runs here. */
 void runtime_container_start(void);
 /* The controller broker for the game in an AppContainer (runtime_broker.c). Outside: the shared memory (its handle,

@@ -1,7 +1,8 @@
 # Running the game in an AppContainer: the broker (design)
 
-Status: steps 1 and 2 are in (`src/runtime_container.c`, `src/runtime_broker.c`, `LBPPC_APPCONTAINER=1`: the game
-runs inside, controllers through the broker); steps 3 to 5 are the design below. It comes from a prototype that ran LBP3 1.28 inside an AppContainer on 2026-11-14 (RTX 4080 Laptop,
+Status: in (`src/runtime_container.c`, `src/runtime_broker.c`), on by default, off with the launcher's Debug switch
+"Game isolation" (`LBPPC_APPCONTAINER=0`): the game runs inside, controllers and the overlay's GPU usage through the
+broker. What is left is the test plan below. It comes from a prototype that ran LBP3 1.28 inside an AppContainer on 2026-11-14 (RTX 4080 Laptop,
 Windows 11): Vulkan, the window, FSR 3.1, NVIDIA Reflex, WASAPI audio, save data and the shader caches all worked.
 Two things did not: the controller (no DualSense) and the overlay's GPU usage (empty). This document is how LBPPC
 would fix both with a broker, and everything else an AppContainer needs.
@@ -41,9 +42,9 @@ run.py ──starts──> LBPPC-Game.exe (outer: the broker, the user's own rig
   thing from `runtime_memory_reserve()`, before the PS4 range is reserved, as `restart_with_range()` already is.
   The outer process never runs game code: it becomes the broker and exits with the game's exit code (so the in-game
   "Apply and restart", exit 75, still reaches `run.py`).
-- Switched by `LBPPC_APPCONTAINER=1` (a launcher setting, "Isolate the game", experimental and off at first). If any
-  step of the setup fails, the game runs as today and the log says why; `LBPPC_APPCONTAINER=require` refuses to start
-  instead (for testing).
+- On by default; the launcher's Debug page switch "Game isolation" turns it off (`LBPPC_APPCONTAINER=0`). If any
+  step of the setup fails, the game runs as before and the log says why; `LBPPC_APPCONTAINER=require` refuses to start
+  instead (for testing). The grants stay when it is switched off (they are only permissions).
 
 ## Outer process: setup
 
@@ -187,7 +188,10 @@ outer process; lowering the integrity is skipped (an AppContainer token is alrea
 2. Done: broker loop and inner virtual gamepads: input, rumble, trigger rumble, LED, effects, motion sensors, touchpad.
    The section has no GPU field yet (step 3). Tested: a DualSense is opened by the broker, attached inside and seen
    by `runtime_pad.c` as "DualSense Wireless Controller: ps5" with motion sensors; input is 0.4-0.5 ms old when the
-   game reads it, as without the container. Rumble, the touchpad and tilt need a hand test.
-3. GPU usage through the broker; the overlay switch.
-4. Launcher setting with the explanation, removal of grants and profile.
-5. The test plan; then decide whether it can be on by default.
+   game reads it, as without the container. Rumble, the touchpad and tilt checked by hand.
+3. Done: GPU usage through the broker. The overlay's PDH query takes a process ID
+   (`bbgpu_gpu_load_for_process`); the broker runs it for the game on a thread of its own, once a second and only
+   while the overlay asks (`gpu_wanted`), and inside the overlay reads the section (`bbgpu_set_gpu_load_source`).
+4. Done, differently: no opt-in setting. Isolation is on by default with an opt-out switch on the launcher's Debug
+   page; switching it off does not remove the grants or the profile.
+5. The test plan.

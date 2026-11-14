@@ -73,6 +73,11 @@ typedef struct {
 } BbMouseFrame;
 void bbgpu_mouse_frame(BbMouseFrame *out);
 void bbgpu_note_game_frame(void); /* the GPU thread, at each game flip */
+/* lbppc (Windows): the busiest GPU engine of process pid, in percent, or below 0 when unknown (Windows' GPU Engine
+ * counters; a few milliseconds, not for a time-critical thread). And the source the overlay's GPU usage reads instead
+ * of those counters, which an AppContainer can't read (runtime_broker.c). */
+float bbgpu_gpu_load_for_process(uint32_t pid);
+void bbgpu_set_gpu_load_source(float (*source)(void));
 /* Closes the game as the window's close button does (Quit Game in the pause menu). Any thread. */
 void bbgpu_request_quit(void);
 /* Applies a just-(re)loaded input.ini to the window thread: whether mouse-to-joystick mode

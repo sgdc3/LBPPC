@@ -159,7 +159,7 @@ void SampleCpu() {
 // Windows' per-process GPU Engine counters (the number Task Manager shows): the busiest of the
 // process's engines. Opening the query and enumerating the instances is not free, so this runs on
 // its own thread once a second, never on the present thread.
-float QueryGpuLoad() {
+float GpuLoadForProcess(DWORD pid) {
     static PDH_HQUERY query{};
     static PDH_HCOUNTER counter{};
     static const bool ready = [&] {
@@ -184,7 +184,7 @@ float QueryGpuLoad() {
     // lbppc: the busiest engine, as Task Manager's GPU column. Not the 3D engine alone: NVIDIA's
     // laptop drivers run Vulkan graphics on "Graphics_1" (or a compute engine), and the 3D engine
     // then reads 0% however busy the GPU is.
-    const std::wstring mine = L"pid_" + std::to_wstring(GetCurrentProcessId()) + L"_";
+    const std::wstring mine = L"pid_" + std::to_wstring(pid) + L"_";
     std::map<std::wstring, double> engines; // "luid_..._eng_N_engtype_X": its utilization
     for (DWORD i = 0; i < count; ++i) {
         if (!items[i].szName || std::wcsncmp(items[i].szName, mine.c_str(), mine.size()) != 0) {
@@ -197,6 +197,16 @@ float QueryGpuLoad() {
         load = std::max(load, value);
     }
     return float(std::min(load, 100.0));
+}
+
+// lbppc: inside an AppContainer these counters can't be read; the broker outside reads them for the game's process
+// and hands the value in (runtime_broker.c, bbgpu_set_gpu_load_source).
+std::atomic<float (*)(void)> gpu_load_source{nullptr};
+float QueryGpuLoad() {
+    if (auto source = gpu_load_source.load(std::memory_order_acquire)) {
+        return source();
+    }
+    return GpuLoadForProcess(GetCurrentProcessId());
 }
 
 // The machine's available physical memory: what Task Manager's "Available" shows (free plus
@@ -1641,3 +1651,14 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
 }
 
 } // namespace BbOverlay
+
+#ifdef _WIN32
+// lbppc: the overlay's GPU usage for another process (the broker, for the game in an AppContainer), and the source the
+// overlay reads instead of its own counters (inside the container). See runtime_broker.c.
+extern "C" float bbgpu_gpu_load_for_process(uint32_t pid) {
+    return BbOverlay::GpuLoadForProcess(pid);
+}
+extern "C" void bbgpu_set_gpu_load_source(float (*source)(void)) {
+    BbOverlay::gpu_load_source.store(source, std::memory_order_release);
+}
+#endif

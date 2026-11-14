@@ -1,4 +1,4 @@
-/* lbppc: the game in an AppContainer (Windows, LBPPC_APPCONTAINER=1; docs/appcontainer-broker.md, step 1).
+/* lbppc: the game in an AppContainer (Windows; on unless LBPPC_APPCONTAINER=0; docs/appcontainer-broker.md).
  *
  * runtime_sandbox.c keeps the game from starting programs and from writing outside its folders, but it can still read
  * everything the user can. An AppContainer reads only what it is given. This process (started by run.py as always)
@@ -6,11 +6,12 @@
  * then exits with the game's exit code (the in-game "Apply and restart", 75, still reaches run.py). It never runs game
  * code. Called first thing from runtime_memory_reserve, before the PS4 range is reserved.
  *
- * Step 1: no broker yet. Controllers (HID) can't be opened inside and the overlay's GPU usage (performance counters)
- * stays empty; the keyboard works.
+ * Controllers (HID) and the overlay's GPU usage (performance counters) can't be read inside: this process reads them
+ * and hands them in (runtime_broker.c).
  *
- * LBPPC_APPCONTAINER=1 tries it and runs the game as before, saying why, when something is missing (a server on this
- * PC, which an AppContainer can't reach; a profile or a permission that can't be made); =require stops instead. */
+ * On by default; LBPPC_APPCONTAINER=0 (the launcher's Debug page, "Game isolation") turns it off. When something is
+ * missing (a server on this PC, which an AppContainer can't reach; a profile or a permission that can't be made) the
+ * game runs as before and the log says why; =require stops instead. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,8 +133,8 @@ static void give_up(const char *why, int require) {
 
 void runtime_container_start(void) {
     const char *setting = getenv("LBPPC_APPCONTAINER");
-    if (!setting || !(setting[0] == '1' || !strcmp(setting, "require"))) return;
-    const int require = !strcmp(setting, "require");
+    if (setting && setting[0] == '0') return;
+    const int require = setting && !strcmp(setting, "require");
     if (runtime_sandbox_in_container()) { /* the game, already inside: its controllers come from the broker */
         runtime_broker_attach();
         return;

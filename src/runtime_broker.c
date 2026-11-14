@@ -22,9 +22,10 @@ void runtime_broker_attach(void) {}
 #else
 #include <windows.h>
 #include <SDL3/SDL.h>
+#include "gpu/bbgpu.h"
 
 #define BROKER_MAGIC 0x4b52424cu /* 'LBRK' */
-#define BROKER_VERSION 1u
+#define BROKER_VERSION 2u
 #define BROKER_PADS 8
 #define BROKER_EFFECT 64
 
@@ -62,6 +63,9 @@ typedef struct {
     volatile LONG64 heartbeat;
     BrokerPad pad[BROKER_PADS];
     BrokerOut out[BROKER_PADS];
+    volatile LONG gpu_wanted; /* game: the overlay shows GPU usage (the broker measures only then) */
+    volatile LONG gpu_seq;    /* broker */
+    float gpu_usage;          /* broker: percent, the busiest engine of the game's process; < 0 unknown */
 } BrokerShared;
 
 static BrokerShared *shared;
@@ -202,6 +206,26 @@ static void apply_requests(BrokerSlot *slot, int index) {
     *had = want;
 }
 
+/* GPU usage of the game's process, once a second while the overlay shows it: Windows' counters take a few
+   milliseconds, so on a thread of its own, never in the controller loop. */
+static DWORD WINAPI measure_gpu(void *process) {
+    const DWORD pid = GetProcessId(process);
+    while (WaitForSingleObject(process, 1000) == WAIT_TIMEOUT) {
+        if (!shared->gpu_wanted) continue;
+        const float usage = bbgpu_gpu_load_for_process(pid);
+        static int said;
+        if (!said && usage >= 0.0f) { /* the first collection has no rate yet (-1) */
+            said = 1;
+            printf("Broker: GPU usage of the game measured for the overlay (%.0f%% now)\n", usage);
+            fflush(stdout);
+        }
+        write_begin(&shared->gpu_seq);
+        shared->gpu_usage = usage;
+        write_end(&shared->gpu_seq);
+    }
+    return 0;
+}
+
 void runtime_broker_run(void *process) {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1"); /* no window here, never focused */
     if (!shared || !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
@@ -209,6 +233,8 @@ void runtime_broker_run(void *process) {
         WaitForSingleObject(process, INFINITE);
         return;
     }
+    HANDLE gpu = CreateThread(NULL, 0, measure_gpu, process, 0, NULL);
+    if (gpu) CloseHandle(gpu);
     HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!timer) timer = CreateWaitableTimerW(NULL, FALSE, NULL);
     BrokerSlot slots[BROKER_PADS];
@@ -386,6 +412,14 @@ static DWORD WINAPI follow_slots(void *unused) {
     return 0;
 }
 
+/* The overlay's GPU usage inside: the broker's measurement of this process. */
+static float broker_gpu_load(void) {
+    InterlockedExchange(&shared->gpu_wanted, 1);
+    struct { float usage; } copy;
+    read_copy(&shared->gpu_seq, &shared->gpu_usage, &copy, sizeof(copy));
+    return shared->gpu_seq ? copy.usage : -1.0f;
+}
+
 void runtime_broker_attach(void) {
     const char *value = getenv("LBPPC_BROKER");
     if (!value || !*value) return;
@@ -397,6 +431,7 @@ void runtime_broker_attach(void) {
         return;
     }
     shared = view;
+    bbgpu_set_gpu_load_source(broker_gpu_load);
     HANDLE thread = CreateThread(NULL, 0, follow_slots, NULL, 0, NULL);
     if (thread) CloseHandle(thread);
 }

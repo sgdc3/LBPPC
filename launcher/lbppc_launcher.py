@@ -134,7 +134,10 @@ DIAGNOSTICS = [('frame_stats', 'BB_FRAME_STATS', N_('Frame log'), N_('Frame rate
                 N_('What the game\'s Friends menu holds, every 5 seconds while online.'), False),
                ('async_shaders', 'BB_ASYNC_PIPELINES', N_('Background shader builds'),
                 N_('A shader the game hasn\'t used before is built without pausing the game. Off: no pop-in, but '
-                   'the game can freeze for a moment the first time.'), True)]
+                   'the game can freeze for a moment the first time.'), True),
+               ('isolation', 'LBPPC_APPCONTAINER', N_('Game isolation'),
+                N_('The game runs in a Windows AppContainer and can read only its own files. Turn it off if something '
+                   'stops working, and say so in your report.'), True)]
 # The Debug page's Performance overlay: lbppc.ini switches, which the in-game menu (Insert) also changes.
 OVERLAY = [('show_fps', N_('Frame rate'), False), ('show_frame_times', N_('Frame times'), False),
            ('show_latency', N_('Render latency'), False), ('show_vram', N_('Video memory'), False),
