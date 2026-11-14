@@ -97,7 +97,10 @@ The game also runs inside an AppContainer, which reads only what LBPPC gives it 
 LBPPC adds a permission for it to its own folders and to the game's. Controllers and the overlay's GPU usage, which
 an AppContainer can't read, come in through a broker outside it (`src/runtime_broker.c`). The log says
 `Container: the game runs in AppContainer LBPPC.Game; controllers through the broker`. A server on this PC (an
-AppContainer can't reach it) runs the game without it. The Debug page's "Game isolation" turns it off.
+AppContainer can't reach it) runs the game without it. The Debug page's "Game isolation" turns it off. Windows
+keeps a low-integrity process away from anything whose permissions name an AppContainer, so the first run after
+switching takes those permissions back (`Container: what earlier runs gave AppContainer LBPPC.Game taken back`) or
+gives them again: a few seconds, once.
 
 On a drive without Windows permissions (FAT32 or exFAT) the folders can't be labelled, so the low integrity part is
 skipped and the log says why. If something stops working that writes outside those folders, set `LBPPC_SANDBOX=0`

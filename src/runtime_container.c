@@ -36,6 +36,9 @@ void runtime_container_start(void) {}
 
 static PSID container;
 static int grant_failures;
+/* The game runs without the container this time: what earlier runs gave it is taken back instead (take_back). */
+static int taking_back, taken_back;
+static void revoke_w(const wchar_t *path, int any);
 
 /* Whether the DACL already gives the container mask (inherited by what a folder holds, for a folder). */
 static int has_grant(PACL dacl, DWORD mask, int dir) {
@@ -54,6 +57,10 @@ static int has_grant(PACL dacl, DWORD mask, int dir) {
 
 /* One allow entry for the container, inherited by a folder's contents; nothing when it is there already. */
 static void grant_w(const wchar_t *path, DWORD mask, int dir) {
+    if (taking_back) {
+        revoke_w(path, 1);
+        return;
+    }
     PACL dacl = NULL, updated = NULL;
     PSECURITY_DESCRIPTOR sd = NULL;
     DWORD error = GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd);
@@ -85,19 +92,19 @@ static void grant_prepared(const char *path, int dir, int writable) {
         grant_w(wide, writable ? WRITE_ACCESS : READ_ACCESS, dir);
 }
 
-/* Takes back what this container was given on path itself (what it holds, through inheritance, goes with it). */
-static void revoke_w(const wchar_t *path) {
+/* Takes back what this container was given on path itself (what it holds, through inheritance, goes with it): any
+ * grant, or (any=0) only one its contents inherit (the whole folder, as earlier versions gave it). */
+static void revoke_w(const wchar_t *path, int any) {
     PACL dacl = NULL, updated = NULL;
     PSECURITY_DESCRIPTOR sd = NULL;
     if (GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd) !=
         ERROR_SUCCESS)
         return;
-    /* Only a grant its contents inherit (the whole folder, as earlier versions gave it): once. */
     int explicit_grant = 0;
     for (DWORD i = 0; dacl && i < dacl->AceCount; ++i) {
         ACE_HEADER *ace;
         if (GetAce(dacl, i, (void **)&ace) && ace->AceType == ACCESS_ALLOWED_ACE_TYPE &&
-            !(ace->AceFlags & INHERITED_ACE) && (ace->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) &&
+            !(ace->AceFlags & INHERITED_ACE) && (any || (ace->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE))) &&
             EqualSid((PSID) & ((ACCESS_ALLOWED_ACE *)ace)->SidStart, container))
             explicit_grant = 1;
     }
@@ -107,8 +114,10 @@ static void revoke_w(const wchar_t *path) {
         access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
         access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
         access.Trustee.ptstrName = (LPWSTR)container;
-        if (SetEntriesInAclW(1, &access, dacl, &updated) == ERROR_SUCCESS)
-            SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, updated, NULL);
+        if (SetEntriesInAclW(1, &access, dacl, &updated) == ERROR_SUCCESS &&
+            SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, updated,
+                                  NULL) == ERROR_SUCCESS)
+            ++taken_back;
     }
     if (updated) LocalFree(updated);
     if (sd) LocalFree(sd);
@@ -157,16 +166,63 @@ static int loopback_server(const char *value) {
     return value && (strstr(value, "127.") || strstr(value, "localhost") || strstr(value, "[::1]"));
 }
 
+/* What it reads: the program and its DLLs, and every file or folder named on the command line (the prepared game in
+ * out/, the game, its update). Not the whole user folder, which holds the launcher's settings: its folders and files
+ * one by one, to read or to write, as runtime_sandbox_prepare lists them. With taking_back, the same walk takes it
+ * all back. */
+static void give_folders(void) {
+    grant_module_folders();
+    int argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    const char *user = "user";
+    static char user_narrow[MAX_PATH];
+    for (int i = 1; argv && i < argc; ++i) {
+        if (!wcscmp(argv[i], L"--user") && i + 1 < argc) {
+            if (WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, user_narrow, sizeof(user_narrow), NULL, NULL))
+                user = user_narrow;
+            revoke_w(argv[i + 1], 0); /* given whole by earlier versions */
+            /* The folder itself, not what it holds: its attributes and names (shadPS4 checks it exists). */
+            grant_w(argv[i + 1], USER_FOLDER_ACCESS, 0);
+            ++i;
+            continue;
+        }
+        grant_read(argv[i]);
+    }
+    if (argv) LocalFree(argv);
+    revoke_w(L"user", 0);
+    grant_w(L"user", USER_FOLDER_ACCESS, 0);
+    if (!runtime_sandbox_prepare(user, grant_prepared)) ++grant_failures;
+}
+
+/* The game runs outside the container, sandboxed at low integrity (runtime_sandbox.c). Windows keeps a low-integrity
+ * process away from anything whose permissions name a particular AppContainer (that container's data, not a low
+ * process's), even what it could read before (the game, its saves, lbppc.ini): what earlier runs gave LBPPC.Game is
+ * taken back. Next to nothing to do when it was taken back already; given again when isolation is back on. */
+static void take_back(void) {
+    if (!container && FAILED(DeriveAppContainerSidFromAppContainerName(CONTAINER_NAME, &container))) return;
+    const ULONGLONG started = GetTickCount64();
+    taking_back = 1;
+    give_folders();
+    taking_back = 0;
+    if (taken_back)
+        printf("Container: what earlier runs gave AppContainer LBPPC.Game taken back (%d places, %llu ms)\n",
+               taken_back, (unsigned long long)(GetTickCount64() - started));
+}
+
 static void give_up(const char *why, int require) {
     fprintf(stderr, "Container: %s; %s\n", why,
             require ? "LBPPC_APPCONTAINER=require: stopping" : "the game runs without it");
     fflush(stderr);
     if (require) ExitProcess(21);
+    take_back();
 }
 
 void runtime_container_start(void) {
     const char *setting = getenv("LBPPC_APPCONTAINER");
-    if (setting && setting[0] == '0') return;
+    if (setting && setting[0] == '0') {
+        take_back();
+        return;
+    }
     const int require = setting && !strcmp(setting, "require");
     if (runtime_sandbox_in_container()) { /* the game, already inside: its controllers come from the broker */
         runtime_broker_attach();
@@ -190,31 +246,8 @@ void runtime_container_start(void) {
         return;
     }
 
-    /* What it reads: the program and its DLLs, and every file or folder named on the command line (the prepared
-       game in out/, the game, its update). Not the whole user folder, which holds the launcher's settings: its
-       folders and files one by one, to read or to write, as runtime_sandbox_prepare lists them. */
     const ULONGLONG started = GetTickCount64();
-    grant_module_folders();
-    int argc = 0;
-    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    const char *user = "user";
-    static char user_narrow[MAX_PATH];
-    for (int i = 1; argv && i < argc; ++i) {
-        if (!wcscmp(argv[i], L"--user") && i + 1 < argc) {
-            if (WideCharToMultiByte(CP_ACP, 0, argv[i + 1], -1, user_narrow, sizeof(user_narrow), NULL, NULL))
-                user = user_narrow;
-            revoke_w(argv[i + 1]); /* given whole by earlier versions */
-            /* The folder itself, not what it holds: its attributes and names (shadPS4 checks it exists). */
-            grant_w(argv[i + 1], USER_FOLDER_ACCESS, 0);
-            ++i;
-            continue;
-        }
-        grant_read(argv[i]);
-    }
-    if (argv) LocalFree(argv);
-    revoke_w(L"user");
-    grant_w(L"user", USER_FOLDER_ACCESS, 0);
-    if (!runtime_sandbox_prepare(user, grant_prepared)) ++grant_failures;
+    give_folders();
     if (grant_failures) {
         give_up("the game's folders could not all be given to it", require);
         return;

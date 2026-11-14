@@ -44,7 +44,10 @@ run.py ──starts──> LBPPC-Game.exe (outer: the broker, the user's own rig
   "Apply and restart", exit 75, still reaches `run.py`).
 - On by default; the launcher's Debug page switch "Game isolation" turns it off (`LBPPC_APPCONTAINER=0`). If any
   step of the setup fails, the game runs as before and the log says why; `LBPPC_APPCONTAINER=require` refuses to start
-  instead (for testing). The grants stay when it is switched off (they are only permissions).
+  instead (for testing). When it is off, or the setup gave up, the grants are taken back (`take_back`): Windows
+  denies a low-integrity process (the sandbox without the container) anything whose DACL names a specific package
+  SID, even with Everyone allowed, so the game could no longer read its saves, lbppc.ini or its own files (an
+  error-dialog loop on a black screen). The first run after a switch either way spends a few seconds on it.
 
 ## Outer process: setup
 
