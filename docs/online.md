@@ -71,11 +71,13 @@ LittleBigPlanet's community servers were closed by a "force join" exploit: a for
 
 Anyone else's connection is dropped before it reaches the game, and the log says `Online: refused a connection from <name>`.
 
-A connection request carries its sender's name, written by the sender. So that nobody can use a friend's name, a
-request counts as that player's only when it comes from the address shadNet has for them (asked once per request,
-kept for two minutes) or from your own network (private and link-local addresses, and Tailscale's 100.64.0.0/10).
-Packets about a connection already made are taken only from where that player is. Otherwise the log says
-`Online: refused a connection named <name> (not from that player's address)`.
+A connection request carries its sender's name, written by the sender, and the address shadNet gives for a player
+can be set by anyone, so neither is trusted. Each PC makes its own key for the account the first time it signs in
+(kept in `user/online_keys`) and publishes the public part in the account's own storage on shadNet, which only that
+account can write (TUS, in LBPPC's own space: up to four PCs per account). A player's packets count only from an
+address where that player answered a challenge with a signature by one of those keys. Packets from your own network
+(private and link-local addresses, and Tailscale's 100.64.0.0/10) need no proof to be accepted. Both players need a
+LBPPC version with this check. The log says `Online: refused a connection named <name> (...)` with the reason.
 
 ## No scripts from other players
 
