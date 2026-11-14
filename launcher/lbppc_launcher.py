@@ -2097,14 +2097,19 @@ class DebugPage:
                                             'Insert in the game changes these while you play.'), HINT_FONT, MUTED,
                                             'nw', width=w - 44)
 
-        # Diagnostics: a switch and what it does
+        # Diagnostics: a switch and what it does, in two columns as the overlay's; each row as tall as its text wraps
+        # (a fixed height let two-line hints run into the next row and the note below).
         dy = y + overlay_h + 12
         scene.image('panel:diagnostics', theme.panel(w, h - overlay_h - 12, t('Diagnostics')), x, dy)
-        for index, (key, _variable, title, hint, _on) in enumerate(DIAGNOSTICS):
-            cy = dy + 44 + index * 46
-            self.switch(f'diag:{key}', x + 20, cy, t(title), launcher.settings['diagnostics'].get(key),
-                        lambda k=key: self.toggle_diagnostic(k))
-            launcher.text(x + 52, cy + 22, t(hint), HINT_FONT, MUTED, 'nw', width=w - 74)
+        per_column = (len(DIAGNOSTICS) + 1) // 2
+        for column, cx in enumerate((x + 20, right)):
+            cy = dy + 44
+            for key, _variable, title, hint, _on in DIAGNOSTICS[column * per_column:(column + 1) * per_column]:
+                self.switch(f'diag:{key}', cx, cy, t(title), launcher.settings['diagnostics'].get(key),
+                            lambda k=key: self.toggle_diagnostic(k))
+                hint_item = launcher.text(cx + 32, cy + 22, t(hint), HINT_FONT, MUTED, 'nw', width=half - 32)
+                bounds = scene.bbox(hint_item)
+                cy = (bounds[3] if bounds else cy + 40) + 10
         self.diag_status = launcher.text(x + 22, dy + h - overlay_h - 12 - 24, t('Used the next time you press Play. '
                                          'Logs go in the report from Make a report.'), HINT_FONT, MUTED, 'nw',
                                          width=w - 44)
