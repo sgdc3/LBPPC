@@ -1475,6 +1475,42 @@ static void script_guard_install(void) {
     image[CHECK_SITE]=0xe9; memcpy(image+CHECK_SITE+1,&rel,4); image[CHECK_SITE+5]=0xcc; image[CHECK_SITE+6]=0xcc;
     printf("Script guard: on, scripts from other players are refused (stubs at %p)\n",(void *)s);
 }
+/* lbppc: no joining without an invite. A party join request (the message dispatcher's handler at 0x3a3e60) takes the
+ * path that skips the game's own checks (0x3a3f73, DealWithRequestJoinParty with checks off) when 0x1b640 finds the
+ * sender in a list at [r14+0x1e0] that a forged "invite accepted" message fills, or when one of our own players is
+ * joining (r13b): the "force join" exploit that ended LittleBigPlanet's community servers. As Patchwork 2's
+ * LBP3ForceJoinPatch (and the shadPS4 online patch), the 34 bytes at 0x3a3f51 become: skip the checks only when one of
+ * our players is joining or the sender is a friend we invited (FindFriendDataEntry 0x38cd40 on the friends manager
+ * [0x130d5f0], the entry's +0xf0); anyone else goes through the checks (0x3a4434), which ask the host. r13 is
+ * 0 or 1 (0x3a3ea0, 0x3a3ed0); r12 and rax are not read after either path before being set again; rbx is the
+ * sender (0x3a3ee5). CUSA00473 1.28, checked against the original bytes, else nothing changes. */
+static void force_join_install(void) {
+    enum { SITE=0x3a3f51 };
+    static const unsigned char original[34]={
+        0x4d,0x8d,0xa6,0xe0,0x01,0x00,0x00, /* lea r12,[r14+0x1e0] */
+        0xe8,0xb3,0xdc,0xff,0xff,           /* call 0x3a1c10 */
+        0x4c,0x89,0xe7,                     /* mov rdi,r12 */
+        0x48,0x89,0xc6,                     /* mov rsi,rax */
+        0xe8,0xd8,0x76,0xc7,0xff,           /* call 0x1b640 */
+        0x44,0x08,0xe8,                     /* or al,r13b */
+        0x3c,0x01,                          /* cmp al,1 */
+        0x0f,0x85,0xc1,0x04,0x00,0x00};     /* jne 0x3a4434 (the checks) */
+    static const unsigned char patched[34]={
+        0x48,0x8b,0x3d,0x98,0x96,0xf6,0x00, /* mov rdi,[0x130d5f0] (friends manager) */
+        0x53, 0x5e,                         /* push rbx; pop rsi (the sender) */
+        0xe8,0xe1,0x8d,0xfe,0xff,           /* call FindFriendDataEntry (0x38cd40) */
+        0x48,0x85,0xc0,                     /* test rax,rax */
+        0x74,0x06,                          /* je +6 (no entry: eax = 0) */
+        0x8b,0x80,0xf0,0x00,0x00,0x00,      /* mov eax,[rax+0xf0] (we invited them) */
+        0x44,0x09,0xe8,                     /* or eax,r13d (one of our players) */
+        0x0f,0x84,0xc1,0x04,0x00,0x00};     /* je 0x3a4434 (the checks) */
+    if (memcmp(image+SITE,original,sizeof(original))) {
+        fputs("Join protection: unexpected game code, not applied (forged invites are accepted)\n",stderr);
+        return;
+    }
+    memcpy(image+SITE,patched,sizeof(patched));
+    puts("Join protection: party joins skip the game's checks only for friends we invited");
+}
 /* lbppc: the game encrypts and checks its P2P packets (XXTEA, 0x247a0) with one 16-byte key at 0xe1d2f0, the same in
  * every copy of LBP3, so anyone could read or forge a session's packets. Online, the two calls that pass it (lea r8 at
  * 0x3795e9, sending, and 0x37e94e, receiving: the only references to it) read a slot of ours instead, where the
@@ -2898,6 +2934,7 @@ int main(int argc, char **argv) {
     friend_log_install();
     net_log_install();
     script_guard_install();
+    force_join_install();
     p2p_key_install();
     sim_divide_install();
     hooks_install(getenv("BB_HOOK"));

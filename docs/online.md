@@ -71,6 +71,11 @@ LittleBigPlanet's community servers were closed by a "force join" exploit: a for
 
 Anyone else's connection is dropped before it reaches the game, and the log says `Online: refused a connection from <name>`.
 
+Inside the game, a friend who is connected can still ask to join your party. The game lets a join skip its own
+checks only when one of your own players is joining or you invited that friend; anyone else goes through the checks,
+which ask you. This is Patchwork's fix for forged "invite accepted" messages; the log says `Join protection: party
+joins skip the game's checks only for friends we invited` at the start.
+
 A connection request carries its sender's name, written by the sender, and the address shadNet gives for a player
 can be set by anyone, so neither is trusted. Each PC makes its own key for the account the first time it signs in
 (kept in `user/online_keys`) and publishes the public part in the account's own storage on shadNet, which only that
