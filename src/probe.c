@@ -1406,6 +1406,75 @@ static void net_log_install(void) {
     }
     printf("Net: message log %s\n",ok ? "on" : "not added (unexpected game code)");
 }
+/* lbppc: no scripts from other players. LBP3 loads a resource from a player in the session (P2P) or from the server;
+ * a script sent by a player is code the game runs, the way LittleBigPlanet's exploits were spread. Ported from the
+ * shadPS4 online patch (Patchwork 2's script block, CUSA00473 1.28; checked against the original bytes, else nothing
+ * changes):
+ * - The resource gate (0x239010) picks the player path when [peer manager 0x1315b18] is 1. At its lea rax (0x23905e)
+ *   a stub sends scripts (type 0xb at [job+0x24]) that have no GUID ([job+0xc] 0, asked for by hash only) to the
+ *   server path (0x2390ab, which reloads rax). A script with a GUID stays on P2P: the completion check below compares
+ *   what a player sends with the hash in the game's own file database, so only its own content can arrive.
+ * - The gate trusts the type a request declares, so a hash-only request of another type could still bring a script.
+ *   A transfer from a player ends in a hash check (0x92ab6a, transfer T in r14, its size in esi): there a stub fails
+ *   (0x92aba8, state 7, the bytes dropped) every hash-only transfer that starts with "FSH", a script's magic
+ *   (FSHb/FSHt). The failure block reads the job from r15 = T+0x10; nothing after it reads what the skipped code
+ *   would have computed. */
+static void script_guard_install(void) {
+    enum { GATE_SITE=0x23905e, GATE_BACK=0x239065, GATE_SERVER=0x2390ab, PEER_MANAGER=0x1315b18,
+           CHECK_SITE=0x92ab6a, CHECK_BACK=0x92ab71, CHECK_FAIL=0x92aba8 };
+    static const unsigned char gate_original[]={0x48,0x8d,0x05,0xb3,0xca,0x0d,0x01},   /* lea rax,[rip+...] */
+                               check_original[]={0x49,0x8b,0x3e,0x4c,0x8d,0x65,0x80},  /* mov rdi,[r14]; lea r12,[rbp-0x80] */
+                               server_original[]={0x4c,0x89,0xff,0x44,0x89,0xf6},     /* mov rdi,r15; mov esi,r14d */
+                               fail_original[]={0x49,0x8b,0x3f,0xbe,0x07,0x00,0x00,0x00}; /* mov rdi,[r15]; mov esi,7 */
+    if (memcmp(image+GATE_SITE,gate_original,sizeof(gate_original)) ||
+        memcmp(image+CHECK_SITE,check_original,sizeof(check_original)) ||
+        memcmp(image+GATE_SERVER,server_original,sizeof(server_original)) ||
+        memcmp(image+CHECK_FAIL,fail_original,sizeof(fail_original))) {
+        fputs("Script guard: unexpected game code, not applied (scripts from other players are loaded)\n",stderr);
+        return;
+    }
+    unsigned char *s=near_image_alloc();
+    if (!s) { fputs("Script guard: no memory near the image, not applied\n",stderr); return; }
+    /* Gate stub: a hash-only script goes to the server, anything else back to the gate with rax = peer manager. */
+    static const unsigned char gate[]={
+        0x80,0x7b,0x24,0x0b,                    /* cmp byte [rbx+0x24],0xb */
+        0x75,0x14,                              /* jne peer */
+        0x83,0x7b,0x0c,0x00,                    /* cmp dword [rbx+0xc],0 */
+        0x75,0x0e,                              /* jne peer */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0,      /* jmp [server] */
+        0x48,0xb8, 0,0,0,0,0,0,0,0,             /* peer: mov rax,peer manager */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0};     /* jmp [back] */
+    /* Check stub: the two moved instructions, then a hash-only transfer of 3 bytes or more starting with "FSH"
+       fails; anything else resumes the check. */
+    static const unsigned char check[]={
+        0x49,0x8b,0x3e,                         /* mov rdi,[r14] */
+        0x4c,0x8d,0x65,0x80,                    /* lea r12,[rbp-0x80] */
+        0x83,0xfe,0x03,                         /* cmp esi,3 */
+        0x72,0x29,                              /* jb resume */
+        0x49,0x8b,0x46,0x10,                    /* mov rax,[r14+0x10] */
+        0x83,0x78,0x0c,0x00,                    /* cmp dword [rax+0xc],0 */
+        0x75,0x1f,                              /* jne resume */
+        0x66,0x81,0x3f,0x46,0x53,               /* cmp word [rdi],'FS' */
+        0x75,0x18,                              /* jne resume */
+        0x80,0x7f,0x02,0x48,                    /* cmp byte [rdi+2],'H' */
+        0x75,0x12,                              /* jne resume */
+        0x4d,0x8d,0x7e,0x10,                    /* lea r15,[r14+0x10] */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0,      /* jmp [fail] */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0};     /* resume: jmp [back] */
+    const uint64_t server=(uint64_t)(uintptr_t)(image+GATE_SERVER), peers=(uint64_t)(uintptr_t)(image+PEER_MANAGER),
+                   gate_back=(uint64_t)(uintptr_t)(image+GATE_BACK), fail=(uint64_t)(uintptr_t)(image+CHECK_FAIL),
+                   check_back=(uint64_t)(uintptr_t)(image+CHECK_BACK);
+    unsigned char *g=s, *c=s+64;
+    memcpy(g,gate,sizeof(gate));
+    memcpy(g+18,&server,8); memcpy(g+28,&peers,8); memcpy(g+42,&gate_back,8);
+    memcpy(c,check,sizeof(check));
+    memcpy(c+45,&fail,8); memcpy(c+59,&check_back,8);
+    int32_t rel=(int32_t)((intptr_t)g-(intptr_t)(image+GATE_SITE+5));
+    image[GATE_SITE]=0xe9; memcpy(image+GATE_SITE+1,&rel,4); image[GATE_SITE+5]=0x66; image[GATE_SITE+6]=0x90;
+    rel=(int32_t)((intptr_t)c-(intptr_t)(image+CHECK_SITE+5));
+    image[CHECK_SITE]=0xe9; memcpy(image+CHECK_SITE+1,&rel,4); image[CHECK_SITE+5]=0xcc; image[CHECK_SITE+6]=0xcc;
+    printf("Script guard: on, scripts from other players are refused (stubs at %p)\n",(void *)s);
+}
 /* lbppc: online play runs both players' worlds in lockstep and compares them ("The game diverged"). rcpps and rsqrtps
  * are approximations whose results differ between CPU makers, harmless on a console where every machine is alike:
  * online, each site in the game and its spu.prx (exact_math_sites.inc, CUSA00473 1.28; checked first, else nothing
@@ -2797,6 +2866,7 @@ int main(int argc, char **argv) {
     quit_menu_install();
     friend_log_install();
     net_log_install();
+    script_guard_install();
     sim_divide_install();
     hooks_install(getenv("BB_HOOK"));
     sync_log_install();

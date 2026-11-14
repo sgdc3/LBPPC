@@ -71,6 +71,14 @@ LittleBigPlanet's community servers were closed by a "force join" exploit: a for
 
 Anyone else's connection is dropped before it reaches the game, and the log says `Online: refused a connection from <name>`.
 
+## No scripts from other players
+
+A script is code the game runs, and a script sent by another player is how LittleBigPlanet's exploits spread, friends
+included. LBPPC fetches every script asked for by its hash alone from the server, never from a player in the session,
+and drops any such transfer from a player that turns out to be a script. Scripts named by the game's own file database
+still come from players: the game checks their content against that database, so nothing else can arrive. The log
+says `Script guard: on` at the start. Ported from the shadPS4 online patch (Patchwork 2's script block).
+
 ## What LBPPC changes for online play
 
 - The game's server address goes to the configured Refresh server.
