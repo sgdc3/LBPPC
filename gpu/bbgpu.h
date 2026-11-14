@@ -73,6 +73,9 @@ typedef struct {
 } BbMouseFrame;
 void bbgpu_mouse_frame(BbMouseFrame *out);
 void bbgpu_note_game_frame(void); /* the GPU thread, at each game flip */
+/* lbppc: the 16 bytes the game's P2P cipher now reads its key from (probe.c points it there); the network library
+ * keeps a session key in them, never the game's own. Once, before going online. */
+void bbgpu_set_p2p_key_slot(uint8_t *slot);
 /* Closes the game as the window's close button does (Quit Game in the pause menu). Any thread. */
 void bbgpu_request_quit(void);
 /* Applies a just-(re)loaded input.ini to the window thread: whether mouse-to-joystick mode

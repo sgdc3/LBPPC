@@ -79,6 +79,15 @@ address where that player answered a challenge with a signature by one of those 
 (private and link-local addresses, and Tailscale's 100.64.0.0/10) need no proof to be accepted. Both players need a
 LBPPC version with this check. The log says `Online: refused a connection named <name> (...)` with the reason.
 
+## Session keys
+
+The game encrypts and checks the packets players send each other with one key, the same in every copy of LBP3, so
+anyone could read or forge them. LBPPC never uses it: each game starts with a random key of its own, and once a
+player has proved who they are (above), the two games agree on one key, sent signed and encrypted for that player
+alone (X25519 and AES-GCM). The key already in use in a session wins, so a player who joins takes the session's key.
+A connection counts as made for the game only once both use the same key. The log says `P2P key: session keys` at
+the start.
+
 ## No scripts from other players
 
 A script is code the game runs, and a script sent by another player is how LittleBigPlanet's exploits spread, friends

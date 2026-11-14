@@ -1702,6 +1702,21 @@ s32 ActivateSig1(NpSignaling::OrbisNpSignalingContextId ctx_id, const OrbisNpId&
     return ORBIS_OK;
 }
 
+void SetP2PKeySlot(u8* slot) {
+    // A peer that starts using our key: its connection is reported again, now active.
+    LbppcIdentity::SetOnKeyAgreed([](const std::string& online_id) {
+        s32 transport_id = 0;
+        {
+            NpSignaling::SignalingMutexGuard lock;
+            transport_id = FindTransportByOnlineIdLocked(online_id);
+        }
+        if (transport_id != 0) {
+            EstablishConnection(transport_id, false);
+        }
+    });
+    LbppcIdentity::SetKeySlot(slot);
+}
+
 void HandlePeerConnectRequest(std::string_view peer_online_id, u32 addr, u16 port) {
     if (peer_online_id.empty() || addr == 0 || port == 0) {
         return;

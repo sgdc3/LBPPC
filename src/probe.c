@@ -1475,6 +1475,37 @@ static void script_guard_install(void) {
     image[CHECK_SITE]=0xe9; memcpy(image+CHECK_SITE+1,&rel,4); image[CHECK_SITE+5]=0xcc; image[CHECK_SITE+6]=0xcc;
     printf("Script guard: on, scripts from other players are refused (stubs at %p)\n",(void *)s);
 }
+/* lbppc: the game encrypts and checks its P2P packets (XXTEA, 0x247a0) with one 16-byte key at 0xe1d2f0, the same in
+ * every copy of LBP3, so anyone could read or forge a session's packets. Online, the two calls that pass it (lea r8 at
+ * 0x3795e9, sending, and 0x37e94e, receiving: the only references to it) read a slot of ours instead, where the
+ * network library keeps a session key: a random one of our own, then the one agreed with the players we are
+ * connected to, each of whom proved who it is (lbppc_identity.cpp). Checked against the original bytes (CUSA00473
+ * 1.28), else nothing changes. */
+static void p2p_key_install(void) {
+    const char *online=getenv("BB_ONLINE");
+    if (!online || online[0]!='1') return;
+    static const struct { uint32_t site; unsigned char original[7]; } sites[]={
+        {0x3795e9,{0x4c,0x8d,0x05,0x00,0x3d,0xaa,0x00}}, /* lea r8,[0xe1d2f0] */
+        {0x37e94e,{0x4c,0x8d,0x05,0x9b,0xe9,0xa9,0x00}}, /* lea r8,[0xe1d2f0] */
+    };
+    for (size_t i=0;i<sizeof(sites)/sizeof(*sites);++i)
+        if (memcmp(image+sites[i].site,sites[i].original,7)) {
+            fputs("P2P key: unexpected game code, not applied (the game's own key is used)\n",stderr);
+            return;
+        }
+    unsigned char *slot=near_image_alloc();
+    if (!slot) { fputs("P2P key: no memory near the image, not applied (the game's own key is used)\n",stderr); return; }
+    /* Data, not code: never sealed, and not executable. */
+    stub_keep_writable(slot);
+    DWORD was;
+    VirtualProtect(slot,65536,PAGE_READWRITE,&was);
+    bbgpu_set_p2p_key_slot(slot); /* fills it before the game can read it */
+    for (size_t i=0;i<sizeof(sites)/sizeof(*sites);++i) {
+        const int32_t rel=(int32_t)((intptr_t)slot-(intptr_t)(image+sites[i].site+7));
+        memcpy(image+sites[i].site+3,&rel,4);
+    }
+    printf("P2P key: session keys, never the game's own (slot at %p)\n",(void *)slot);
+}
 /* lbppc: online play runs both players' worlds in lockstep and compares them ("The game diverged"). rcpps and rsqrtps
  * are approximations whose results differ between CPU makers, harmless on a console where every machine is alike:
  * online, each site in the game and its spu.prx (exact_math_sites.inc, CUSA00473 1.28; checked first, else nothing
@@ -2867,6 +2898,7 @@ int main(int argc, char **argv) {
     friend_log_install();
     net_log_install();
     script_guard_install();
+    p2p_key_install();
     sim_divide_install();
     hooks_install(getenv("BB_HOOK"));
     sync_log_install();
