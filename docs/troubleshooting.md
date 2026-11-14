@@ -83,6 +83,20 @@ A single long frame when a level starts is normal: the level's textures are uplo
 | `Clear: target ... dropped (blended: check this one)` | Only appears with the image sync switched off for testing. If effects build up or leave trails, send a report. |
 | `Clear warning: shader ...` | The same: only worth a look if something draws wrongly. |
 
+## The sandbox
+
+Before the game's code starts, the game process limits itself (`src/runtime_sandbox.c`). It cannot start other
+programs, it loads DLLs only from local files, and it runs at low integrity, like a browser's tab: it can still read
+everything, but it writes only to its own folders in `user/` (saves, caches, logs, `temp0`, `download0`, `data`
+and the like), `user/trophies.log`, `lbppc.ini` and `input.ini`. The launcher's settings, the modules
+and patches the game loads and LBPPC's program files stay out of its reach, so a level or a player that exploited the
+game could not stay on the PC. The log says
+`Sandbox: no other programs; DLLs from local files only; low integrity, writing only to its own folders`.
+
+On a drive without Windows permissions (FAT32 or exFAT) the folders can't be labelled, so the low integrity part is
+skipped and the log says why. If something stops working that writes outside those folders, set `LBPPC_SANDBOX=0`
+to rule the sandbox out, and say so in the report.
+
 ## Debug page switches
 
 The launcher's Debug page has diagnostics that add to the log. Only switch one on when asked to: they make logs

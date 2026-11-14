@@ -144,6 +144,8 @@ void runtime_thread_attach_host(const char *name) {
 void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
+    /* lbppc: the game's code runs next; the process limits itself first (runtime_sandbox.c). */
+    runtime_sandbox_install();
 }
 static GuestThread *find_thread(void *handle) {
     GuestThread *found=NULL;
