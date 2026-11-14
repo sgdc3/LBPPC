@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -43,10 +44,109 @@ constexpr s64 kRelayAfterUs = 4'000'000; // no answer by then: use the shadNet r
 constexpr s64 kHandshakeRetransmitMs = 500;
 constexpr s64 kKeepaliveIntervalMs = 45'000;
 
-void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt);
+// endpoint_verified: the sender's address is known to be that player's (shadNet said so).
+void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt,
+                         bool endpoint_verified = false);
 void HandleHandshakePacket(u32 from_addr, u16 from_port,
                            const NpSignaling::SignalingHandshake& pkt);
 std::string PacketOnlineIdString(const u8* online_id);
+
+// lbppc: a signaling packet names its sender itself (online_id_from), so anyone could send one with a friend's
+// name. A packet is taken as that player's only from the address shadNet knows for them (where their own STUN
+// pings come from, which is also the source the relay reports), or from this network: private, loopback and
+// link-local addresses, and 100.64.0.0/10 (Tailscale), which a stranger on the internet cannot send from.
+bool IsLocalNetworkAddr(u32 addr_nbo) {
+    const u8* b = reinterpret_cast<const u8*>(&addr_nbo);
+    return b[0] == 10 || b[0] == 127 || (b[0] == 172 && (b[1] & 0xf0) == 16) ||
+           (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) ||
+           (b[0] == 100 && (b[1] & 0xc0) == 64);
+}
+
+// A packet about an existing connection: from where that peer is, or from this network (a peer on our own
+// network answers from its private address, not the public one shadNet has).
+bool FromTransportPeer(const NpSignaling::PeerTransport& transport, u32 from_addr, u16 from_port) {
+    if (from_addr == 0 || IsLocalNetworkAddr(from_addr)) {
+        return true;
+    }
+    return transport.addr != 0 && from_addr == transport.addr && from_port == transport.port;
+}
+
+// Join requests whose sender's address is checked with shadNet on the activation thread (the check waits for
+// the server's reply), then handled as if just received. The addresses shadNet confirmed are kept a while.
+struct JoinCheck {
+    std::string online_id;
+    NpSignaling::SignalingControl pkt;
+    u32 addr = 0;
+    u16 port = 0;
+};
+constexpr size_t kMaxJoinChecks = 16;
+// Per player, against request floods; shorter than kRelayAfterUs, after which a joiner asks again by the relay.
+constexpr auto kJoinCheckInterval = std::chrono::seconds(2);
+constexpr auto kVerifiedEndpointLife = std::chrono::minutes(2);
+std::mutex g_join_mutex;
+std::vector<JoinCheck> g_join_checks;
+std::map<std::string, std::chrono::steady_clock::time_point> g_join_last_check;
+struct VerifiedEndpoint {
+    u32 addr = 0;
+    u16 port = 0;
+    std::chrono::steady_clock::time_point until;
+};
+std::map<std::string, VerifiedEndpoint> g_verified_endpoints;
+
+bool EndpointVerified(const std::string& online_id, u32 addr, u16 port) {
+    std::scoped_lock lock{g_join_mutex};
+    const auto it = g_verified_endpoints.find(online_id);
+    return it != g_verified_endpoints.end() && it->second.addr == addr && it->second.port == port &&
+           std::chrono::steady_clock::now() < it->second.until;
+}
+
+bool HasJoinChecks() {
+    std::scoped_lock lock{g_join_mutex};
+    return !g_join_checks.empty();
+}
+
+void QueueJoinCheck(const std::string& online_id, const NpSignaling::SignalingControl& pkt, u32 addr,
+                    u16 port) {
+    {
+        std::scoped_lock lock{g_join_mutex};
+        const auto now = std::chrono::steady_clock::now();
+        auto& last = g_join_last_check[online_id];
+        if (g_join_checks.size() >= kMaxJoinChecks || now - last < kJoinCheckInterval) {
+            return;
+        }
+        last = now;
+        g_join_checks.push_back({online_id, pkt, addr, port});
+    }
+    NpHandler::GetInstance().GetSignalingState().activation_cv.notify_one();
+}
+
+void ProcessJoinChecks() {
+    std::vector<JoinCheck> work;
+    {
+        std::scoped_lock lock{g_join_mutex};
+        work.swap(g_join_checks);
+    }
+    for (const JoinCheck& check : work) {
+        u32 addr = 0;
+        u16 port = 0;
+        if (!NpSignaling::Transport::ResolvePeer(check.online_id, &addr, &port) || addr != check.addr ||
+            port != check.port) {
+            LOG_WARNING(Lib_NpSignaling,
+                        "join refused: the request named '{}' but did not come from where shadNet "
+                        "has that player",
+                        check.online_id);
+            std::printf("Online: refused a connection named %s (not from that player's address)\n",
+                        check.online_id.c_str());
+            continue;
+        }
+        {
+            std::scoped_lock lock{g_join_mutex};
+            g_verified_endpoints[check.online_id] = {
+                addr, port, std::chrono::steady_clock::now() + kVerifiedEndpointLife};
+        }
+        HandleControlPacket(check.addr, check.port, check.pkt, true);
+    }
+}
 
 std::string OnlineIdString(const OrbisNpOnlineId& online_id) {
     return NpSignaling::OnlineIdToString(online_id);
@@ -888,6 +988,12 @@ void HandleHandshakePacket(u32 from_addr, u16 from_port,
         NpSignaling::SignalingMutexGuard lock;
 
         const s32 transport_id = FindTransportByOnlineIdLocked(from_id);
+        if (transport_id != 0 &&
+            !FromTransportPeer(
+                NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id],
+                from_addr, from_port)) {
+            return; // the peer's name, but not from where the peer is
+        }
         if (transport_id != 0) {
             NpHandler::GetInstance()
                 .GetSignalingState()
@@ -1002,7 +1108,8 @@ static bool JoinAllowedByList(const std::string& online_id) {
     return false;
 }
 
-void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt) {
+void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt,
+                         bool endpoint_verified) {
     const std::string from_id = PacketOnlineIdString(pkt.online_id_from);
     const NpSignaling::ControlKind kind = static_cast<NpSignaling::ControlKind>(pkt.kind);
     const bool listed = kind == NpSignaling::ControlKind::ActivationRequest && JoinAllowedByList(from_id);
@@ -1039,6 +1146,20 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::Signal
                     std::printf("Online: refused a connection from %s (not a friend; LBPPC_JOIN_ALLOW)\n",
                                 from_id.c_str());
                 }
+                return;
+            }
+            // The name is the sender's own claim: it counts only from that player's address.
+            // A connection that already has the peer's address (shadNet's, from our own activation) is checked
+            // against it; anything else asks shadNet first.
+            const bool known_peer =
+                transport_id != 0 &&
+                NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id].addr != 0 &&
+                FromTransportPeer(
+                    NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id],
+                    from_addr, from_port);
+            if (!endpoint_verified && !known_peer && !IsLocalNetworkAddr(from_addr) &&
+                !EndpointVerified(from_id, from_addr, from_port)) {
+                QueueJoinCheck(from_id, pkt, from_addr, from_port);
                 return;
             }
             const std::string to_id = PacketOnlineIdString(pkt.online_id_to);
@@ -1123,6 +1244,11 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::Signal
             ack_port = transport.port;
         } else if (transport_id == 0) {
             return;
+        } else if (!endpoint_verified &&
+                   !FromTransportPeer(
+                       NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id],
+                       from_addr, from_port)) {
+            return; // the peer's name, but not from where the peer is
         } else if (kind == NpSignaling::ControlKind::ActivationAck) {
             auto& transport =
                 NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id];
@@ -1389,6 +1515,9 @@ void ActivationThreadMain() {
                 if (state.runtime_stop.load(std::memory_order_relaxed)) {
                     return true;
                 }
+                if (HasJoinChecks()) {
+                    return true;
+                }
                 NpSignaling::SignalingMutexGuard signaling_lock;
                 return !state.pending_activations.empty();
             });
@@ -1398,6 +1527,7 @@ void ActivationThreadMain() {
             break;
         }
 
+        ProcessJoinChecks();
         ProcessPendingActivations();
     }
 }
@@ -1645,8 +1775,8 @@ void HandlePeerConnectRequest(std::string_view peer_online_id, u32 addr, u16 por
                 std::min<size_t>(peer_online_id.size(), ORBIS_NP_ONLINEID_MAX_LENGTH));
     LOG_INFO(Lib_NpSignaling, "Peer connect request from shadNet: peer='{}' endpoint={:#x}:{}",
              peer_online_id, addr, Net::sceNetNtohs(port));
-    // Its ack opens our router to the peer, and our own handshakes follow.
-    HandleControlPacket(addr, port, pkt);
+    // Its ack opens our router to the peer, and our own handshakes follow. shadNet gave the address.
+    HandleControlPacket(addr, port, pkt, true);
 }
 
 void DeactivateSig1(NpSignaling::OrbisNpSignalingConnectionId conn_id) {

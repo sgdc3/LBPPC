@@ -71,6 +71,12 @@ LittleBigPlanet's community servers were closed by a "force join" exploit: a for
 
 Anyone else's connection is dropped before it reaches the game, and the log says `Online: refused a connection from <name>`.
 
+A connection request carries its sender's name, written by the sender. So that nobody can use a friend's name, a
+request counts as that player's only when it comes from the address shadNet has for them (asked once per request,
+kept for two minutes) or from your own network (private and link-local addresses, and Tailscale's 100.64.0.0/10).
+Packets about a connection already made are taken only from where that player is. Otherwise the log says
+`Online: refused a connection named <name> (not from that player's address)`.
+
 ## No scripts from other players
 
 A script is code the game runs, and a script sent by another player is how LittleBigPlanet's exploits spread, friends
