@@ -163,8 +163,9 @@ void runtime_sandbox_install(void) {
     const int contained=runtime_sandbox_in_container();
 
     int low=contained; /* an AppContainer's token is low already (runtime_container.c) */
-    if (labelled && !contained) {
-        /* Temporary files go to a folder it can still write. */
+    if (labelled || contained) {
+        /* Temporary files go to a folder it can still write: at low integrity, or in the AppContainer (which inherits
+           the user's TEMP and can't write there; user\temp is given to it). */
         char temp[MAX_PATH];
         snprintf(temp,sizeof(temp),"%s\\temp",user ? user : "user");
         char full[MAX_PATH];
@@ -177,6 +178,8 @@ void runtime_sandbox_install(void) {
             snprintf(assignment,sizeof(assignment),"TMP=%s",full);
             _putenv(assignment);
         }
+    }
+    if (labelled && !contained) {
         HANDLE token=NULL;
         PSID sid=NULL;
         if (OpenProcessToken(GetCurrentProcess(),TOKEN_ADJUST_DEFAULT|TOKEN_QUERY,&token) &&
@@ -187,7 +190,7 @@ void runtime_sandbox_install(void) {
         if (!low) fprintf(stderr,"Sandbox: integrity not lowered (error %lu)\n",GetLastError());
         if (sid) LocalFree(sid);
         if (token) CloseHandle(token);
-    } else if (!labelled) {
+    } else if (!labelled && !contained) {
         fputs("Sandbox: low integrity skipped (the folders above could not be labelled): the game keeps the user's "
               "own rights\n",stderr);
     }

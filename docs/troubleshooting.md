@@ -96,8 +96,10 @@ game could not stay on the PC. The log says
 The game also runs inside an AppContainer, which reads only what LBPPC gives it (`docs/appcontainer-broker.md`):
 LBPPC adds a permission for it to its own folders and to the game's. Controllers and the overlay's GPU usage, which
 an AppContainer can't read, come in through a broker outside it (`src/runtime_broker.c`). The log says
-`Container: the game runs in AppContainer LBPPC.Game; controllers through the broker`. A server on this PC (an
-AppContainer can't reach it) runs the game without it. The Debug page's "Game isolation" turns it off. Windows
+`Container: the game runs in AppContainer LBPPC.Game; controllers through the broker`. When it can't be set up (a
+server on this PC, which an AppContainer can't reach; a folder whose permissions can't be changed) the game does not
+start: the launcher says why (`STOP: Game isolation could not start: ...` in the log). The Debug page's "Game
+isolation" turns it off, and the game then runs with the rest of the sandbox only. Windows
 keeps a low-integrity process away from anything whose permissions name an AppContainer, so the first run after
 switching takes those permissions back (`Container: what earlier runs gave AppContainer LBPPC.Game taken back`) or
 gives them again: a few seconds, once.

@@ -43,8 +43,10 @@ run.py ──starts──> LBPPC-Game.exe (outer: the broker, the user's own rig
   The outer process never runs game code: it becomes the broker and exits with the game's exit code (so the in-game
   "Apply and restart", exit 75, still reaches `run.py`).
 - On by default; the launcher's Debug page switch "Game isolation" turns it off (`LBPPC_APPCONTAINER=0`). If any
-  step of the setup fails, the game runs as before and the log says why; `LBPPC_APPCONTAINER=require` refuses to start
-  instead (for testing). When it is off, or the setup gave up, the grants are taken back (`take_back`): Windows
+  step of the setup fails, the game does not start: without the container it could read all of the player's files,
+  and a line in the log is easy to miss. It ends with exit code 22 and a `STOP: Game isolation could not start: <why>`
+  line; `run.py` passes the code on, and the launcher shows the reason and how to play without isolation. When it is
+  off, the grants are taken back (`take_back`): Windows
   denies a low-integrity process (the sandbox without the container) anything whose DACL names a specific package
   SID, even with Everyone allowed, so the game could no longer read its saves, lbppc.ini or its own files (an
   error-dialog loop on a black screen). The first run after a switch either way spends a few seconds on it.
@@ -54,18 +56,19 @@ run.py ──starts──> LBPPC-Game.exe (outer: the broker, the user's own rig
 1. **Profile**: `CreateAppContainerProfile("LBPPC.Game")` (or `DeriveAppContainerSidFromAppContainerName` when it
    exists). Capabilities: `internetClient`, `internetClientServer` (peers connect to us), `privateNetworkClientServer`
    (players on the same network).
-2. **Loopback**: an AppContainer cannot reach `127.0.0.1` without an exemption that needs administrator rights. If
-   `LBPPC_SERVER` or shadNet is on this PC, skip the container and say so.
+2. **Loopback**: an AppContainer cannot reach this PC (`127.0.0.1`, `::1`, or its own LAN addresses) without an
+   exemption that needs administrator rights. If `LBPPC_SERVER` or shadNet names this PC (its host, resolved, is a
+   loopback, unspecified or own address, `localhost`, or the computer's name), skip the container and say so.
 3. **Grants** (one inheritable ACE for the container's SID, added only when missing):
    - read and execute: the install folder, and the folder of every non-system module this process has loaded (covers
      MSYS2's `clang64\bin` in development builds and nothing extra in packaged ones);
    - read: the game folder (`--app0`), the update folder (`--update`), the DLC folders;
    - modify: the folders and files `runtime_sandbox.c` labels low. The list moves to `runtime.h` so both modules use
      one copy.
-   The grants stay (they are permissions, not file changes; the files themselves are untouched). Turning the setting
-   off in the launcher removes them and deletes the profile (`DeleteAppContainerProfile`). The launcher must say,
-   when the setting is turned on, that it adds a permission to the game's folders: LBPPC otherwise promises not to
-   change them.
+   The grants stay between runs (they are permissions, not file changes; the files themselves are untouched). Every
+   place given is listed in `<user>\container-grants.txt`: a place a later run no longer gives (another game folder,
+   a DLL folder that came and went) is taken back from it. Turning the setting off in the launcher takes them all
+   back (`take_back`, the same walk plus that list) and deletes the profile (`DeleteAppContainerProfile`).
 4. **Shared memory**: an unnamed, inheritable section (`CreateFileMappingW(INVALID_HANDLE_VALUE, ...)`, fixed size,
    layout below), mapped by both.
 5. **Start the game**: the same command line, `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT` and three
@@ -112,13 +115,18 @@ typedef struct {
         uint8_t  effect_size, effect[62];    /* SDL_SendGamepadEffect (DualSense trigger effects) */
     } out[8];
 
+    int64_t  gpu_wanted_ms;    /* game: when the overlay last asked */
     uint32_t gpu_seq;
     float    gpu_usage;        /* percent, the busiest engine of the game's process */
 } BrokerShared;
 ```
 
-The broker treats `out[]` as untrusted: pad index, durations (capped), effect size (≤ 62) and LED values are checked
-before any SDL call, and nothing else in the section is ever read back from the game.
+(The code's struct, `src/runtime_broker.c`, is the reference; this one is the sketch it came from.)
+
+The game can write the whole section, not only `out[]`. The broker treats `out[]` as untrusted (effect size checked,
+values passed to SDL as plain numbers) and reads nothing else back from the game except `gpu_wanted_ms`, a time: a
+pad's layout (touchpad fingers, sensors) and last motion sample are kept in the broker's own memory and written over
+the section whole each time.
 
 ## Outer process: broker loop
 
@@ -194,9 +202,10 @@ outer process; lowering the integrity is skipped (an AppContainer token is alrea
    game reads it, as without the container. Rumble, the touchpad and tilt checked by hand.
 3. Done: GPU usage through the broker. The overlay's PDH query takes a process ID
    (`bbgpu_gpu_load_for_process`); the broker runs it for the game on a thread of its own, once a second and only
-   while the overlay asks (`gpu_wanted`), and inside the overlay reads the section (`bbgpu_set_gpu_load_source`).
+   while the overlay has asked in the last 3 seconds (`gpu_wanted_ms`), and inside the overlay reads the section
+   (`bbgpu_set_gpu_load_source`).
 4. Done, differently: no opt-in setting. Isolation is on by default with an opt-out switch on the launcher's Debug
-   page; switching it off does not remove the grants or the profile.
+   page; switching it off takes the grants back and deletes the profile.
 5. The test plan.
 6. Done: the container no longer gets the whole user folder (it holds the launcher's settings): only the folder's
    own attributes and names, and its game folders one by one (read: `sys_modules`, `cheats`, `patches`, `custom_*`,

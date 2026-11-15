@@ -118,6 +118,9 @@ def windows_language():
             0x14: '15', 0x15: '16'}.get(primary, '1')
 # The game's progress through the shader list at its start: 'Shaders: preparing 120 of 464'.
 SHADER_PROGRESS = re.compile(r'^Shaders: (preparing|building) (\d+) of (\d+)$')
+# Game isolation could not start (src/runtime_container.c): the game stops with this code and says why on this line.
+ISOLATION_EXIT_CODE = 22
+ISOLATION_STOP = 'STOP: Game isolation could not start: '
 # The Debug page's Diagnostics: (key, environment variable, title, hint, default). Each is passed to the game on
 # Play as 1 or 0.
 DIAGNOSTICS = [('frame_stats', 'BB_FRAME_STATS', N_('Frame log'), N_('Frame rate, pacing and every slow frame in the log.'),
@@ -1364,6 +1367,7 @@ class Launcher(tk.Tk):
         # The launcher in the game's language (i18n.py): set before anything is drawn.
         i18n.set_language(self.game_language())
         self.process = None
+        self.isolation_failure = None  # why game isolation could not start (pump)
         self.card = None  # the notice, wizard or update card on screen
         # The launcher brought to the front (a dialog closing, its taskbar button) while a card is open: the card
         # over it again, or the launcher would sit on top of the card that has the input and look frozen.
@@ -1879,6 +1883,7 @@ class Launcher(tk.Tk):
         self.scrub = log_privacy.from_environment(env)
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         self.clear_log()
+        self.isolation_failure = None
         # The bridge's name before 0.1.1 (bbport_dlss.dll) is still loaded.
         dlss_files = [name if name != 'lbppc_dlss.dll' or (BIN / name).is_file() else 'bbport_dlss.dll'
                       for name in DLSS_FILES]
@@ -1913,6 +1918,9 @@ class Launcher(tk.Tk):
                     self.finished(item[0])
                     break
                 shown.append(item)
+                if item.startswith(ISOLATION_STOP):
+                    # Why game isolation could not start: the game's own words, up to "The game does not start".
+                    self.isolation_failure = item[len(ISOLATION_STOP):].split('. The game does not start')[0].strip()
                 progress = SHADER_PROGRESS.match(item)
                 if progress:
                     # The shader list prepared before play (vk_pipeline_serialization.cpp): two passes, the
@@ -1955,6 +1963,18 @@ class Launcher(tk.Tk):
             self.set_state(t('Stopped'), MUTED)  # ended by Stop: its exit code is taskkill's, not an error
         elif code == 0:
             self.set_state(t('Closed'), MUTED)
+        elif code == ISOLATION_EXIT_CODE:
+            # The game stopped before running: in its AppContainer or not at all (runtime_container.c). Never quietly
+            # without it, where it could read all of the player's files.
+            self.set_state(t('Game isolation could not start'), ERROR)
+            if not self.log_shown:
+                self.toggle_log()
+            reason = self.isolation_failure or t('see the log')
+            messagebox.showerror(t('Game isolation'), t(
+                'The game did not start: Windows could not run it in its AppContainer, which keeps it away from your '
+                'files.\n\nReason: {reason}\n\nTo play anyway, turn off Game isolation on the Debug page. The game '
+                'still can\'t start programs or change files outside its folders, but it can read your files.',
+                reason=reason), parent=self)
         else:
             self.set_state(t('Ended with an error: see the log'), ERROR)
             if not self.log_shown:

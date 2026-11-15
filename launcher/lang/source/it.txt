@@ -399,3 +399,8 @@
 397|L'aggiornamento viene letto dalla sua cartella: le cartelle del gioco e dell'aggiornamento restano come sono
 398|{folder} è un DLC per la versione {region} di LittleBigPlanet 3 ({id}). LBPPC ha bisogno della versione statunitense o europea ({ids}) e dei suoi DLC.
 399|Quell'aggiornamento è per {update}, ma il gioco è {game}. Scegli l'aggiornamento della stessa edizione.
+400|Isolamento del gioco
+401|Il gioco gira in un AppContainer di Windows e può leggere solo i propri file. Disattivalo se qualcosa smette di funzionare, e scrivilo nella segnalazione.
+402|Impossibile avviare l'isolamento del gioco
+403|vedi il log
+404|Il gioco non è partito: Windows non è riuscito ad avviarlo nel suo AppContainer, che lo tiene lontano dai tuoi file.\n\nMotivo: {reason}\n\nPer giocare comunque, disattiva Isolamento del gioco nella pagina Debug. Il gioco continua a non poter avviare programmi né modificare file fuori dalle sue cartelle, ma potrà leggere i tuoi file.

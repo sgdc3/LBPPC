@@ -161,12 +161,33 @@ static int restarted; /* this is the restarted process: never once more */
 static void restart_with_range(void) {
     if (restarted) return;
     SetEnvironmentVariableA("BB_RANGE_RESERVED","1");
-    STARTUPINFOW si={.cb=sizeof(si),.dwFlags=STARTF_USESTDHANDLES,.hStdInput=GetStdHandle(STD_INPUT_HANDLE),
-                     .hStdOutput=GetStdHandle(STD_OUTPUT_HANDLE),.hStdError=GetStdHandle(STD_ERROR_HANDLE)};
+    STARTUPINFOEXW si={.StartupInfo={.cb=sizeof(si),.dwFlags=STARTF_USESTDHANDLES,.hStdInput=GetStdHandle(STD_INPUT_HANDLE),
+                     .hStdOutput=GetStdHandle(STD_OUTPUT_HANDLE),.hStdError=GetStdHandle(STD_ERROR_HANDLE)}};
+    /* lbppc: inside the AppContainer the new process is in it too, and an AppContainer forces high-entropy ASLR,
+       which put the first thread's stack in the PS4 range (runtime_container.c): turned off again, as there. */
+    static DWORD64 policy=PROCESS_CREATION_MITIGATION_POLICY_HIGH_ENTROPY_ASLR_ALWAYS_OFF|
+                          PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_OFF;
+    DWORD flags=CREATE_SUSPENDED;
+    if (runtime_sandbox_in_container()) {
+        SIZE_T size=0;
+        InitializeProcThreadAttributeList(NULL,1,0,&size);
+        si.lpAttributeList=HeapAlloc(GetProcessHeap(),0,size);
+        if (si.lpAttributeList && InitializeProcThreadAttributeList(si.lpAttributeList,1,0,&size) &&
+            UpdateProcThreadAttribute(si.lpAttributeList,0,PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,&policy,sizeof(policy),NULL,NULL)) {
+            flags|=EXTENDED_STARTUPINFO_PRESENT;
+            si.StartupInfo.cb=sizeof(si);
+        } else {
+            fprintf(stderr,"Runtime: the restart inside the AppContainer keeps its forced ASLR (error %lu)\n",GetLastError());
+            si.StartupInfo.cb=sizeof(si.StartupInfo);
+        }
+    } else {
+        si.StartupInfo.cb=sizeof(si.StartupInfo);
+    }
     PROCESS_INFORMATION pi;
     wchar_t *line=_wcsdup(GetCommandLineW());
-    const BOOL started=line && CreateProcessW(NULL,line,NULL,NULL,TRUE,CREATE_SUSPENDED,NULL,NULL,&si,&pi);
+    const BOOL started=line && CreateProcessW(NULL,line,NULL,NULL,TRUE,flags,NULL,NULL,&si.StartupInfo,&pi);
     free(line);
+    if (flags&EXTENDED_STARTUPINFO_PRESENT) DeleteProcThreadAttributeList(si.lpAttributeList);
     SetEnvironmentVariableA("BB_RANGE_RESERVED",NULL);
     if (!started) return;
     if (!VirtualAlloc2(pi.hProcess,(void *)USER_MIN,USER_MAX-USER_MIN,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) {
@@ -192,7 +213,7 @@ static void restart_with_range(void) {
 /* The guest range is reserved before anything else can be placed there (runtime_start). */
 void runtime_memory_reserve(void) {
     if (region_count) return;
-    /* lbppc: with LBPPC_APPCONTAINER=1 the game runs in a process of its own inside an AppContainer, and this one
+    /* lbppc: unless LBPPC_APPCONTAINER=0 the game runs in a process of its own inside an AppContainer, and this one
        waits for it (runtime_container.c): before anything is reserved here. */
     runtime_container_start();
     const char *reserved=getenv("BB_RANGE_RESERVED");

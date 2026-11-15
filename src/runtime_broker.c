@@ -25,7 +25,7 @@ void runtime_broker_attach(void) {}
 #include "gpu/bbgpu.h"
 
 #define BROKER_MAGIC 0x4b52424cu /* 'LBRK' */
-#define BROKER_VERSION 2u
+#define BROKER_VERSION 3u
 #define BROKER_PADS 8
 #define BROKER_EFFECT 64
 
@@ -63,7 +63,7 @@ typedef struct {
     volatile LONG64 heartbeat;
     BrokerPad pad[BROKER_PADS];
     BrokerOut out[BROKER_PADS];
-    volatile LONG gpu_wanted; /* game: the overlay shows GPU usage (the broker measures only then) */
+    volatile LONG64 gpu_wanted_ms; /* game: when the overlay last asked for GPU usage (the broker measures only then) */
     volatile LONG gpu_seq;    /* broker */
     float gpu_usage;          /* broker: percent, the busiest engine of the game's process; < 0 unknown */
 } BrokerShared;
@@ -111,7 +111,18 @@ void *runtime_broker_create(void) {
 void runtime_broker_child_environment(int set) {
     static const char *const hints[] = {"SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_RAWINPUT", "SDL_JOYSTICK_XINPUT",
                                         "SDL_JOYSTICK_DIRECTINPUT", "SDL_JOYSTICK_WGI", "SDL_JOYSTICK_GAMEINPUT"};
-    for (size_t i = 0; i < sizeof(hints) / sizeof(*hints); ++i) SetEnvironmentVariableA(hints[i], set ? "0" : NULL);
+    enum { HINTS = sizeof(hints) / sizeof(*hints) };
+    static char saved[HINTS][64];
+    static int had[HINTS];
+    for (size_t i = 0; i < HINTS; ++i) {
+        if (set) { /* the user's own value, if any, comes back afterwards */
+            const DWORD n = GetEnvironmentVariableA(hints[i], saved[i], sizeof(saved[i]));
+            had[i] = n > 0 && n < sizeof(saved[i]);
+            SetEnvironmentVariableA(hints[i], "0");
+        } else {
+            SetEnvironmentVariableA(hints[i], had[i] ? saved[i] : NULL);
+        }
+    }
     if (!set) SetEnvironmentVariableA("LBPPC_BROKER", NULL);
 }
 
@@ -120,6 +131,10 @@ typedef struct {
     SDL_JoystickID id;
     BrokerOut applied; /* the last request carried out */
     uint64_t rumble_sent_ms, triggers_sent_ms;
+    /* The pad's layout, as published: the game can write the whole section, so the broker never reads it back. */
+    int fingers, has_accel, has_gyro;
+    float accel[3], gyro[3];
+    uint32_t sensor_seq;
 } BrokerSlot;
 
 static uint32_t generations;
@@ -134,12 +149,19 @@ static void publish_open(BrokerSlot *slot, int index) {
     p->product = SDL_GetGamepadProduct(g);
     const char *name = SDL_GetGamepadName(g);
     snprintf(p->name, sizeof(p->name), "%s", name ? name : "Controller");
-    p->has_accel = SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(g, SDL_SENSOR_ACCEL, true);
-    p->has_gyro = SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(g, SDL_SENSOR_GYRO, true);
-    p->accel_rate = p->has_accel ? SDL_GetGamepadSensorDataRate(g, SDL_SENSOR_ACCEL) : 0.0f;
-    p->gyro_rate = p->has_gyro ? SDL_GetGamepadSensorDataRate(g, SDL_SENSOR_GYRO) : 0.0f;
+    slot->has_accel = SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(g, SDL_SENSOR_ACCEL, true);
+    slot->has_gyro = SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(g, SDL_SENSOR_GYRO, true);
+    p->has_accel = (uint8_t)slot->has_accel;
+    p->has_gyro = (uint8_t)slot->has_gyro;
+    p->accel_rate = slot->has_accel ? SDL_GetGamepadSensorDataRate(g, SDL_SENSOR_ACCEL) : 0.0f;
+    p->gyro_rate = slot->has_gyro ? SDL_GetGamepadSensorDataRate(g, SDL_SENSOR_GYRO) : 0.0f;
     const int fingers = SDL_GetNumGamepadTouchpads(g) > 0 ? SDL_GetNumGamepadTouchpadFingers(g, 0) : 0;
-    p->fingers = (uint8_t)(fingers > 2 ? 2 : fingers < 0 ? 0 : fingers);
+    slot->fingers = fingers > 2 ? 2 : fingers < 0 ? 0 : fingers;
+    p->fingers = (uint8_t)slot->fingers;
+    memset(slot->accel, 0, sizeof(slot->accel));
+    memset(slot->gyro, 0, sizeof(slot->gyro));
+    slot->sensor_seq = 0;
+    p->sensor_seq = 0;
     write_end(&p->seq);
     memset(&slot->applied, 0, sizeof(slot->applied));
     read_copy(&shared->out[index].seq, &shared->out[index], &slot->applied, sizeof(slot->applied));
@@ -151,26 +173,29 @@ static void publish_state(BrokerSlot *slot, int index) {
     BrokerPad *p = &shared->pad[index];
     SDL_Gamepad *g = slot->gamepad;
     float accel[3] = {0}, gyro[3] = {0};
-    const int new_accel = p->has_accel && SDL_GetGamepadSensorData(g, SDL_SENSOR_ACCEL, accel, 3);
-    const int new_gyro = p->has_gyro && SDL_GetGamepadSensorData(g, SDL_SENSOR_GYRO, gyro, 3);
+    const int new_accel = slot->has_accel && SDL_GetGamepadSensorData(g, SDL_SENSOR_ACCEL, accel, 3);
+    const int new_gyro = slot->has_gyro && SDL_GetGamepadSensorData(g, SDL_SENSOR_GYRO, gyro, 3);
     write_begin(&p->seq);
     for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; ++a) p->axes[a] = SDL_GetGamepadAxis(g, (SDL_GamepadAxis)a);
     uint32_t buttons = 0;
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; ++b)
         if (SDL_GetGamepadButton(g, (SDL_GamepadButton)b)) buttons |= 1u << b;
     p->buttons = buttons;
-    for (int f = 0; f < p->fingers; ++f) {
+    for (int f = 0; f < slot->fingers; ++f) {
         bool down = false;
         float x = 0, y = 0, pressure = 0;
         SDL_GetGamepadTouchpadFinger(g, 0, f, &down, &x, &y, &pressure);
         p->finger[f] = (BrokerFinger){x, y, pressure, (uint8_t)down, {0}};
     }
-    if ((new_accel && memcmp(accel, p->accel, sizeof(accel))) || (new_gyro && memcmp(gyro, p->gyro, sizeof(gyro)))) {
-        memcpy(p->accel, accel, sizeof(accel));
-        memcpy(p->gyro, gyro, sizeof(gyro));
+    if ((new_accel && memcmp(accel, slot->accel, sizeof(accel))) || (new_gyro && memcmp(gyro, slot->gyro, sizeof(gyro)))) {
+        if (new_accel) memcpy(slot->accel, accel, sizeof(accel));
+        if (new_gyro) memcpy(slot->gyro, gyro, sizeof(gyro));
         p->sensor_timestamp_ns = SDL_GetTicksNS();
-        ++p->sensor_seq;
+        p->sensor_seq = ++slot->sensor_seq;
     }
+    /* Written whole each time: what the game may have put there is never read. */
+    memcpy(p->accel, slot->accel, sizeof(slot->accel));
+    memcpy(p->gyro, slot->gyro, sizeof(slot->gyro));
     write_end(&p->seq);
 }
 
@@ -211,7 +236,9 @@ static void apply_requests(BrokerSlot *slot, int index) {
 static DWORD WINAPI measure_gpu(void *process) {
     const DWORD pid = GetProcessId(process);
     while (WaitForSingleObject(process, 1000) == WAIT_TIMEOUT) {
-        if (!shared->gpu_wanted) continue;
+        /* The overlay asks about once a second while it shows GPU usage: not asked lately, not measured. */
+        const LONG64 asked = InterlockedCompareExchange64(&shared->gpu_wanted_ms, 0, 0);
+        if (!asked || GetTickCount64() - (ULONGLONG)asked > 3000) continue;
         const float usage = bbgpu_gpu_load_for_process(pid);
         static int said;
         if (!said && usage >= 0.0f) { /* the first collection has no rate yet (-1) */
@@ -241,10 +268,14 @@ void runtime_broker_run(void *process) {
     memset(slots, 0, sizeof(slots));
     for (;;) {
         /* Every 2 ms: a DualSense report is about 4 ms apart over Bluetooth, 1 ms over USB. */
-        LARGE_INTEGER due = {.QuadPart = -20000};
-        SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
-        HANDLE waits[2] = {process, timer};
-        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) break;
+        if (timer) {
+            LARGE_INTEGER due = {.QuadPart = -20000};
+            SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
+            HANDLE waits[2] = {process, timer};
+            if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) break;
+        } else if (WaitForSingleObject(process, 2) != WAIT_TIMEOUT) { /* no timer: a coarser wait, same loop */
+            break;
+        }
 
         SDL_PumpEvents();
         SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
@@ -414,7 +445,7 @@ static DWORD WINAPI follow_slots(void *unused) {
 
 /* The overlay's GPU usage inside: the broker's measurement of this process. */
 static float broker_gpu_load(void) {
-    InterlockedExchange(&shared->gpu_wanted, 1);
+    InterlockedExchange64(&shared->gpu_wanted_ms, (LONG64)GetTickCount64());
     struct { float usage; } copy;
     read_copy(&shared->gpu_seq, &shared->gpu_usage, &copy, sizeof(copy));
     return shared->gpu_seq ? copy.usage : -1.0f;

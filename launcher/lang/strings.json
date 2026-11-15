@@ -398,5 +398,10 @@
  "This is the {region} version of LittleBigPlanet 3 ({id}). LBPPC needs the US or European version of the game ({ids}): other versions won't run.",
  "The update is read from its own folder: your game and update folders are left as they are",
  "{folder} is DLC for the {region} version of LittleBigPlanet 3 ({id}). LBPPC needs the US or European version ({ids}), and its DLC.",
- "That update is for {update}, but the game is {game}. Choose the update of the same edition."
+ "That update is for {update}, but the game is {game}. Choose the update of the same edition.",
+ "Game isolation",
+ "The game runs in a Windows AppContainer and can read only its own files. Turn it off if something stops working, and say so in your report.",
+ "Game isolation could not start",
+ "see the log",
+ "The game did not start: Windows could not run it in its AppContainer, which keeps it away from your files.\n\nReason: {reason}\n\nTo play anyway, turn off Game isolation on the Debug page. The game still can't start programs or change files outside its folders, but it can read your files."
 ]

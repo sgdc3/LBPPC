@@ -26,6 +26,7 @@ import game_view  # noqa: E402
 SUPPORTED = {'CUSA00473': '01.28', 'CUSA00063': '01.28'}
 MSYS2_BIN = Path(r'C:\msys64\clang64\bin')  # development builds: SDL3 and the other CLANG64 DLLs
 RESTART_EXIT_CODE = 75  # the in-game menu's Apply and restart (probe.c runtime_restart)
+CONTAINER_EXIT_CODE = 22  # game isolation could not start (runtime_container.c): passed on to the launcher
 
 
 def script(name, *args):
@@ -319,6 +320,8 @@ def main(argv):
             if code != RESTART_EXIT_CODE:
                 break
             print('Restarting the game (settings menu)', flush=True)
+    if code == CONTAINER_EXIT_CODE:
+        return CONTAINER_EXIT_CODE  # the game said why (STOP: Game isolation ...); the launcher explains it
     if code:
         # Windows status codes say how it ended: 0xC00000FD stack overflow, 0xC0000374 heap corruption,
         # 0xC0000409 fast fail (abort, a security check), 0xC0000005 access violation.

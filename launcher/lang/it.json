@@ -398,5 +398,10 @@
  "This is the {region} version of LittleBigPlanet 3 ({id}). LBPPC needs the US or European version of the game ({ids}): other versions won't run.": "Questa è la versione {region} di LittleBigPlanet 3 ({id}). LBPPC ha bisogno della versione statunitense o europea del gioco ({ids}): le altre versioni non funzionano.",
  "The update is read from its own folder: your game and update folders are left as they are": "L'aggiornamento viene letto dalla sua cartella: le cartelle del gioco e dell'aggiornamento restano come sono",
  "{folder} is DLC for the {region} version of LittleBigPlanet 3 ({id}). LBPPC needs the US or European version ({ids}), and its DLC.": "{folder} è un DLC per la versione {region} di LittleBigPlanet 3 ({id}). LBPPC ha bisogno della versione statunitense o europea ({ids}) e dei suoi DLC.",
- "That update is for {update}, but the game is {game}. Choose the update of the same edition.": "Quell'aggiornamento è per {update}, ma il gioco è {game}. Scegli l'aggiornamento della stessa edizione."
+ "That update is for {update}, but the game is {game}. Choose the update of the same edition.": "Quell'aggiornamento è per {update}, ma il gioco è {game}. Scegli l'aggiornamento della stessa edizione.",
+ "Game isolation": "Isolamento del gioco",
+ "The game runs in a Windows AppContainer and can read only its own files. Turn it off if something stops working, and say so in your report.": "Il gioco gira in un AppContainer di Windows e può leggere solo i propri file. Disattivalo se qualcosa smette di funzionare, e scrivilo nella segnalazione.",
+ "Game isolation could not start": "Impossibile avviare l'isolamento del gioco",
+ "see the log": "vedi il log",
+ "The game did not start: Windows could not run it in its AppContainer, which keeps it away from your files.\n\nReason: {reason}\n\nTo play anyway, turn off Game isolation on the Debug page. The game still can't start programs or change files outside its folders, but it can read your files.": "Il gioco non è partito: Windows non è riuscito ad avviarlo nel suo AppContainer, che lo tiene lontano dai tuoi file.\n\nMotivo: {reason}\n\nPer giocare comunque, disattiva Isolamento del gioco nella pagina Debug. Il gioco continua a non poter avviare programmi né modificare file fuori dalle sue cartelle, ma potrà leggere i tuoi file."
 }
