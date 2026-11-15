@@ -357,6 +357,9 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
 
     LOG_INFO(NpHandler, "user_id={} signed in npid='{}' accountId={}", user_id, npid,
              client->GetUserId());
+    // lbppc: this PC's identity key, published now that the session is up (lbppc_identity.h). Not from
+    // OnLoginResult: that runs before this client is in m_clients.
+    LbppcIdentity::OnSignedIn(client);
 
     Net::UPnPClient::Instance().SetP2PFeaturesEnabled(client->IsMatching2Enabled());
     if (client->IsMatching2Enabled() && EmulatorSettings.IsUPnPEnabled()) {

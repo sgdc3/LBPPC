@@ -5,7 +5,6 @@
 #include <algorithm>
 #include "common/logging/log.h"
 #include "core/libraries/np/np_error.h"
-#include "core/libraries/np/lbppc_identity.h"
 #include "core/libraries/np/np_handler/np_handler.h"
 #include "imgui/shadnet_notifications_layer.h"
 
@@ -88,18 +87,6 @@ void NpHandler::OnFriendStatus(s32 user_id, const ShadNet::NotifyFriendStatus& n
 void NpHandler::OnLoginResult(s32 user_id, const ShadNet::LoginResult& res) {
     if (res.error != ShadNet::ErrorType::NoError) {
         return;
-    }
-    // lbppc: this PC's identity key, published once signed in (lbppc_identity.h).
-    {
-        std::shared_ptr<ShadNet::ShadNetClient> client;
-        {
-            std::lock_guard lock(m_mutex_clients);
-            const auto it = m_clients.find(user_id);
-            if (it != m_clients.end()) {
-                client = it->second;
-            }
-        }
-        LbppcIdentity::OnSignedIn(client);
     }
     FriendListSnapshot snap;
     snap.friends.reserve(res.friends.size());
