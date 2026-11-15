@@ -1,0 +1,105 @@
+diff --git a/Refresh.Core/Types/Matching/MatchMethods/UpdateRoomDataMethod.cs b/Refresh.Core/Types/Matching/MatchMethods/UpdateRoomDataMethod.cs
+index bc0c30e1..01a7f8a0 100644
+--- a/Refresh.Core/Types/Matching/MatchMethods/UpdateRoomDataMethod.cs
++++ b/Refresh.Core/Types/Matching/MatchMethods/UpdateRoomDataMethod.cs
+@@ -12,7 +12,9 @@ public class UpdateRoomDataMethod : IMatchMethod
+     public Response Execute(DataContext dataContext, SerializedRoomData body, GameServerConfig gameServerConfig)
+     {
+         GameRoom room = dataContext.Match.GetOrCreateRoomByPlayer(dataContext.User!, dataContext.Platform, dataContext.Game, body.NatType == null ? NatType.Open : body.NatType[0], body.PassedNoJoinPoint);
+-        if (room.HostId.Id != dataContext.User!.UserId) return Unauthorized;
++        // LBPPC: only the host changes its room, but a guest is answered with a success, as Sony's server did: LBP3 on
++        // PS4, told "no" often enough, sends the guest back to its own Pod after a level with its Sackboys frozen.
++        if (room.HostId.Id != dataContext.User!.UserId) return OK;
+ 
+         if (body.RoomState != null) room.RoomState = body.RoomState.Value;
+         
+diff --git a/Refresh.Interfaces.Game/Endpoints/Handshake/MetadataEndpoints.cs b/Refresh.Interfaces.Game/Endpoints/Handshake/MetadataEndpoints.cs
+index 19572fc1..e002ba66 100644
+--- a/Refresh.Interfaces.Game/Endpoints/Handshake/MetadataEndpoints.cs
++++ b/Refresh.Interfaces.Game/Endpoints/Handshake/MetadataEndpoints.cs
+@@ -48,23 +48,34 @@ public class MetadataEndpoints : EndpointGroup
+ 
+     [GameEndpoint("npdata", ContentType.Xml, HttpMethods.Post)]
+     [RateLimitSettings(480, 8, 420, "game-npdata")]
+-    public Response SetFriendData(RequestContext context, GameUser user, GameDatabaseContext database, SerializedFriendData body, DataContext dataContext, GameServerConfig config)
++    public SerializedFriendData SetFriendData(RequestContext context, GameUser user, GameDatabaseContext database, SerializedFriendData body, DataContext dataContext, GameServerConfig config)
+     {
+-        if (user.IsWriteBlocked(config))
+-            return OK; // else the game will send a new request for this every minute
+-
+-        IEnumerable<GameUser> friends = body.FriendsList.Names
++        // LBPPC: the reply lists the posted friends who have an account here, as Sony's server did. LBP3 (PS3 and PS4)
++        // takes them as its "LBP friends", the only ones the Pod's friends list shows; an empty reply showed nobody.
++        List<(string Name, GameUser User)> friends = (body.FriendsList?.Names ?? [])
+             .Take(128) // should be way more than enough - we'll see if this becomes a problem
+-            .Select(username => database.GetUserByUsername(username))
+-            .Where(u => u != null)!;
+-        
+-        foreach (GameUser userToFavourite in friends)
++            .Where(username => !string.IsNullOrEmpty(username) && !username.StartsWith('!'))
++            .Select(username => (username, database.GetUserByUsername(username)))
++            .Where(f => f.Item2 != null)
++            .ToList()!;
++
++        // A write-blocked user gets the list too (else the game asks again every minute), but hearts nobody.
++        if (!user.IsWriteBlocked(config))
+         {
+-            database.FavouriteUser(userToFavourite, user);
+-            dataContext.Cache.RemoveOwnUserRelations(user, userToFavourite); // really don't want to refresh the relations of up to 128 users in the worst case
++            foreach ((string _, GameUser userToFavourite) in friends)
++            {
++                database.FavouriteUser(userToFavourite, user);
++                dataContext.Cache.RemoveOwnUserRelations(user, userToFavourite); // really don't want to refresh the relations of up to 128 users in the worst case
++            }
+         }
+-        
+-        return OK;
++
++        return new SerializedFriendData
++        {
++            FriendsList = new SerializedFriendData.SerializedHandleList
++            {
++                Names = friends.Select(f => f.Name).ToList(),
++            },
++        };
+     }
+ 
+     private static readonly Lazy<string?> NetworkSettingsFile
+@@ -121,7 +132,6 @@ public class MetadataEndpoints : EndpointGroup
+             return File.Exists(path) ? File.ReadAllText(path) : null;
+         });
+ 
+-    [GameEndpoint("t_conf")]
+     [GameEndpoint("telemetry.cfg")]
+     [MinimumRole(GameUserRole.Restricted)]
+     [NullStatusCode(Gone)]
+@@ -148,6 +158,13 @@ public class MetadataEndpoints : EndpointGroup
+             return File.Exists(path) ? File.ReadAllText(path) : null;
+         });
+ 
++    // LBPPC: LBP3 on PS4 treats a failed t_conf as a failed connection and plays offline, so it gets the file or,
++    // without one, an empty 200 instead of 410.
++    [GameEndpoint("t_conf")]
++    [MinimumRole(GameUserRole.Restricted)]
++    [RateLimitSettings(ConfigRequestTimeoutDuration, ConfigRequestAmount, ConfigBlockDuration, ConfigBucket)]
++    public string Lbp3TelemetryConfig(RequestContext context) => this.TelemetryConfig(context) ?? "";
++
+     [GameEndpoint("promotions")]
+     [NullStatusCode(OK)]
+     [MinimumRole(GameUserRole.Restricted)]
+@@ -166,11 +183,12 @@ public class MetadataEndpoints : EndpointGroup
+         return promotions;
+     }
+     
+-    [GameEndpoint("farc_hashes")]
++    [GameEndpoint("farc_hashes", ContentType.Xml)]
+     [MinimumRole(GameUserRole.Restricted)]
+-    //Stubbed to return a 410 Gone, so LBP3 doesn't spam us.
+     //The game doesn't actually use this information for anything, so we don't allow server owners to replace this.
+-    public Response FarcHashes(RequestContext context) => Gone;
++    //LBPPC: an empty list, not 410 Gone: LBP3 on PS4 treats a failed farc_hashes as a failed connection and plays
++    //offline. A success stops LBP3's retries as 410 did.
++    public string FarcHashes(RequestContext context) => "<farc_hashes></farc_hashes>";
+     
+     //TODO: In the future this should allow you to have separate files per language since the game sends the language through the `language` query parameter.
+     private static readonly Lazy<string?> DeveloperVideosFile

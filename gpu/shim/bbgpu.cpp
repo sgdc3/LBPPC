@@ -476,6 +476,13 @@ extern "C" void bbgpu_note_game_frame(void) {
     if (g_window) g_window->SnapshotMouseFrame();
 }
 
+namespace Libraries::Np::SignalingHandler {
+void SetP2PKeySlot(uint8_t* slot);
+}
+extern "C" void bbgpu_set_p2p_key_slot(uint8_t* slot) {
+    Libraries::Np::SignalingHandler::SetP2PKeySlot(slot);
+}
+
 extern "C" void bbgpu_request_quit(void) {
     SDL_Event quit{};
     quit.type = SDL_EVENT_QUIT;

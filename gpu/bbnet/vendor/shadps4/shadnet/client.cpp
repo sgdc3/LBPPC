@@ -966,6 +966,11 @@ void ShadNetClient::DispatchPacket(PacketType type, u16 cmd_raw, u64 pkt_id,
 
 // Login reply
 
+std::string ShadNetClient::GetStunToken() const {
+    std::lock_guard lock(m_stun_token_mutex);
+    return m_stun_token;
+}
+
 void ShadNetClient::HandleLoginReply(const std::vector<u8>& payload) {
     LoginResult res;
 
@@ -998,6 +1003,10 @@ void ShadNetClient::HandleLoginReply(const std::vector<u8>& payload) {
 
                 m_avatar_url = res.avatarUrl;
                 m_user_id = res.userId;
+                {
+                    std::lock_guard lock(m_stun_token_mutex);
+                    m_stun_token = pb.lbppc_stun_token();
+                }
                 {
                     std::lock_guard lock(m_mutex_friends);
                     m_friends = res.friends;

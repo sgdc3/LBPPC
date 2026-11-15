@@ -345,6 +345,8 @@ public:
     u64 GetUserId() const;
     // Online ID this client logged in with (set once in Start()).
     const std::string& GetNpid() const;
+    // lbppc: the secret an LBPPC server gave this session for its STUN pings (empty from other servers).
+    std::string GetStunToken() const;
     u32 GetServerProtocolVersion() const {
         return m_server_protocol_version.load();
     }
@@ -446,6 +448,8 @@ private:
     std::string m_host;
     u16 m_port = 31313;
     std::string m_npid;
+    mutable std::mutex m_stun_token_mutex;
+    std::string m_stun_token;
     std::string m_password;
     std::string m_token;
     bool m_appear_offline = false; // user's Appear-Offline preference (sent at login)

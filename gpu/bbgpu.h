@@ -73,6 +73,9 @@ typedef struct {
 } BbMouseFrame;
 void bbgpu_mouse_frame(BbMouseFrame *out);
 void bbgpu_note_game_frame(void); /* the GPU thread, at each game flip */
+/* lbppc: the 16 bytes the game's P2P cipher now reads its key from (probe.c points it there); the network library
+ * keeps a session key in them, never the game's own. Once, before going online. */
+void bbgpu_set_p2p_key_slot(uint8_t *slot);
 /* lbppc (Windows): the busiest GPU engine of process pid, in percent, or below 0 when unknown (Windows' GPU Engine
  * counters; a few milliseconds, not for a time-critical thread). And the source the overlay's GPU usage reads instead
  * of those counters, which an AppContainer can't read (runtime_broker.c). */

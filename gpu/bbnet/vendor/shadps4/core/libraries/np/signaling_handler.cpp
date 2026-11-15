@@ -20,8 +20,10 @@
 #include "common/singleton.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/net/net_p2p.h"
+#include "core/libraries/net/net_upnp.h"
 #include "core/libraries/net/net_util.h"
 #include "core/libraries/np/np_error.h"
+#include "core/libraries/np/lbppc_identity.h"
 #include "core/libraries/np/np_handler/np_handler.h"
 #include "core/libraries/np/np_matching2/np_matching2_internal.h"
 #include "core/libraries/np/np_matching2/np_matching2_signaling.h"
@@ -43,10 +45,45 @@ constexpr s64 kRelayAfterUs = 4'000'000; // no answer by then: use the shadNet r
 constexpr s64 kHandshakeRetransmitMs = 500;
 constexpr s64 kKeepaliveIntervalMs = 45'000;
 
-void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt);
+// endpoint_verified: the sender's address was confirmed by that player (a request handled after its check).
+void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt,
+                         bool endpoint_verified = false);
 void HandleHandshakePacket(u32 from_addr, u16 from_port,
                            const NpSignaling::SignalingHandshake& pkt);
 std::string PacketOnlineIdString(const u8* online_id);
+
+// lbppc: a signaling packet names its sender itself (online_id_from), and the address shadNet gives for a player can
+// be set by anyone (its STUN ping names its sender itself too). A packet is taken as a player's only from an address
+// that player proved it is at (lbppc_identity.h: a challenge answered from there, signed by a key only that account
+// can publish), or from this network: private, loopback and link-local addresses, and 100.64.0.0/10 (Tailscale),
+// which a stranger on the internet cannot send from.
+bool IsLocalNetworkAddr(u32 addr_nbo) {
+    const u8* b = reinterpret_cast<const u8*>(&addr_nbo);
+    return b[0] == 10 || b[0] == 127 || (b[0] == 172 && (b[1] & 0xf0) == 16) ||
+           (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) ||
+           (b[0] == 100 && (b[1] & 0xc0) == 64);
+}
+
+// Whether a packet naming online_id may be taken from addr:port.
+bool SenderTrusted(const std::string& online_id, u32 addr, u16 port) {
+    return addr == 0 || IsLocalNetworkAddr(addr) || LbppcIdentity::Verified(online_id, addr, port);
+}
+
+// Asks online_id to prove it is at addr:port. With request, that join request is handled once it has (the proof
+// arrives on another thread, outside the signaling lock).
+void QueueIdentityCheck(const std::string& online_id, u32 addr, u16 port,
+                        const NpSignaling::SignalingControl* request) {
+    if (!request) {
+        LbppcIdentity::Verify(online_id, addr, port, nullptr);
+        return;
+    }
+    const NpSignaling::SignalingControl copy = *request;
+    LbppcIdentity::Verify(online_id, addr, port, [online_id, addr, port, copy](bool proved) {
+        if (proved) {
+            HandleControlPacket(addr, port, copy, true);
+        }
+    });
+}
 
 std::string OnlineIdString(const OrbisNpOnlineId& online_id) {
     return NpSignaling::OnlineIdToString(online_id);
@@ -109,6 +146,11 @@ void HandleStunEcho(const NpSignaling::StunEcho& echo) {
 void ProcessSignalingPacket(const void* data, u32 len, u32 from_addr, u16 from_port) {
     const auto* buf = static_cast<const u8*>(data);
     const auto nbytes = static_cast<size_t>(len);
+
+    // lbppc: identity proofs and session keys (lbppc_identity.h).
+    if (LbppcIdentity::HandlePacket(buf, nbytes, from_addr, from_port)) {
+        return;
+    }
 
     if (nbytes == sizeof(NpSignaling::StunEcho)) {
         NpSignaling::StunEcho echo{};
@@ -218,8 +260,17 @@ bool PublishSignalingInfo(const OrbisNpOnlineId& online_id) {
     std::memcpy(ping.online_id, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
     ping.local_ip = NpSignaling::Transport::LocalAddr();
 
-    const int rc =
-        NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
+    // lbppc: on an LBPPC server, the session's token after the 21 bytes (lbppc_identity.h, StunToken); other
+    // servers read the first 21 and ignore it.
+    u8 packet[sizeof(ping) + 16];
+    std::memcpy(packet, &ping, sizeof(ping));
+    u32 size = sizeof(ping);
+    const std::string token = LbppcIdentity::StunToken(OnlineIdString(online_id));
+    if (token.size() == 16) {
+        std::memcpy(packet + sizeof(ping), token.data(), 16);
+        size += 16;
+    }
+    const int rc = NpSignaling::Transport::SignalingSendTo(packet, size, server_addr, server_udp);
     LOG_DEBUG(Lib_NpSignaling, "PublishSignalingInfo: id='{}' server={:#x}:{} local_ip={:#x} rc={}",
               OnlineIdString(online_id), server_addr, Net::sceNetNtohs(server_udp), ping.local_ip,
               rc);
@@ -383,6 +434,12 @@ bool HasSig1ConnectionForTransportLocked(s32 transport_id) {
 void SyncSig1StatusLocked(NpSignaling::ConnectionInfo& ci,
                           const NpSignaling::PeerTransport& transport) {
     ci.status = transport.status;
+    // lbppc: active for the game only once the peer uses our session key; until then its packets would fail the
+    // game's check (lbppc_identity.h).
+    if (ci.status == NpSignaling::ORBIS_NP_SIGNALING_CONN_STATUS_ACTIVE &&
+        !LbppcIdentity::KeyAgreed(OnlineIdString(transport.online_id))) {
+        ci.status = NpSignaling::ORBIS_NP_SIGNALING_CONN_STATUS_PENDING;
+    }
 }
 
 void SyncSig1ConnectionsForTransportLocked(s32 transport_id) {
@@ -888,6 +945,11 @@ void HandleHandshakePacket(u32 from_addr, u16 from_port,
         NpSignaling::SignalingMutexGuard lock;
 
         const s32 transport_id = FindTransportByOnlineIdLocked(from_id);
+        if (transport_id != 0 && !SenderTrusted(from_id, from_addr, from_port)) {
+            // The peer's name from an address it has not confirmed: ask it; the handshake is sent again.
+            QueueIdentityCheck(from_id, from_addr, from_port, nullptr);
+            return;
+        }
         if (transport_id != 0) {
             NpHandler::GetInstance()
                 .GetSignalingState()
@@ -1002,7 +1064,8 @@ static bool JoinAllowedByList(const std::string& online_id) {
     return false;
 }
 
-void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt) {
+void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::SignalingControl& pkt,
+                         bool endpoint_verified) {
     const std::string from_id = PacketOnlineIdString(pkt.online_id_from);
     const NpSignaling::ControlKind kind = static_cast<NpSignaling::ControlKind>(pkt.kind);
     const bool listed = kind == NpSignaling::ControlKind::ActivationRequest && JoinAllowedByList(from_id);
@@ -1039,6 +1102,12 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::Signal
                     std::printf("Online: refused a connection from %s (not a friend; LBPPC_JOIN_ALLOW)\n",
                                 from_id.c_str());
                 }
+                return;
+            }
+            // The name is the sender's own claim: it counts only from an address that player confirmed. Else
+            // the player is asked, and this request is handled once it confirms.
+            if (!endpoint_verified && !SenderTrusted(from_id, from_addr, from_port)) {
+                QueueIdentityCheck(from_id, from_addr, from_port, &pkt);
                 return;
             }
             const std::string to_id = PacketOnlineIdString(pkt.online_id_to);
@@ -1123,6 +1192,9 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const NpSignaling::Signal
             ack_port = transport.port;
         } else if (transport_id == 0) {
             return;
+        } else if (!endpoint_verified && !SenderTrusted(from_id, from_addr, from_port)) {
+            QueueIdentityCheck(from_id, from_addr, from_port, nullptr);
+            return; // the peer's name from an address it has not confirmed
         } else if (kind == NpSignaling::ControlKind::ActivationAck) {
             auto& transport =
                 NpHandler::GetInstance().GetSignalingState().peer_transports[transport_id];
@@ -1351,6 +1423,22 @@ void StepPendingConnections() {
     }
 }
 
+// lbppc: every peer we have a connection with proves where it is, and agrees on the session key
+// (lbppc_identity.h); outside the signaling lock, as the identity code takes it itself.
+void StepIdentity() {
+    std::vector<LbppcIdentity::Peer> peers;
+    {
+        NpSignaling::SignalingMutexGuard lock;
+        for (const auto& [transport_id, transport] :
+             NpHandler::GetInstance().GetSignalingState().peer_transports) {
+            if (transport.state != NpSignaling::ConnState::Inactive) {
+                peers.push_back({OnlineIdString(transport.online_id), transport.addr, transport.port});
+            }
+        }
+    }
+    LbppcIdentity::Step(peers);
+}
+
 void ThreadMain() {
     LOG_DEBUG(Lib_NpSignaling, "Signaling runtime thread started");
     auto& state = NpHandler::GetInstance().GetSignalingState();
@@ -1364,6 +1452,7 @@ void ThreadMain() {
         const auto now = std::chrono::steady_clock::now();
         DrainControlPackets();
         DrainSignalingPackets();
+        StepIdentity();
         StepPendingConnections();
         SendEchoPings();
         SyncMatching2Peers();
@@ -1622,6 +1711,21 @@ s32 ActivateSig1(NpSignaling::OrbisNpSignalingContextId ctx_id, const OrbisNpId&
     return ORBIS_OK;
 }
 
+void SetP2PKeySlot(u8* slot) {
+    // A peer that starts using our key: its connection is reported again, now active.
+    LbppcIdentity::SetOnKeyAgreed([](const std::string& online_id) {
+        s32 transport_id = 0;
+        {
+            NpSignaling::SignalingMutexGuard lock;
+            transport_id = FindTransportByOnlineIdLocked(online_id);
+        }
+        if (transport_id != 0) {
+            EstablishConnection(transport_id, false);
+        }
+    });
+    LbppcIdentity::SetKeySlot(slot);
+}
+
 void HandlePeerConnectRequest(std::string_view peer_online_id, u32 addr, u16 port) {
     if (peer_online_id.empty() || addr == 0 || port == 0) {
         return;
@@ -1645,7 +1749,8 @@ void HandlePeerConnectRequest(std::string_view peer_online_id, u32 addr, u16 por
                 std::min<size_t>(peer_online_id.size(), ORBIS_NP_ONLINEID_MAX_LENGTH));
     LOG_INFO(Lib_NpSignaling, "Peer connect request from shadNet: peer='{}' endpoint={:#x}:{}",
              peer_online_id, addr, Net::sceNetNtohs(port));
-    // Its ack opens our router to the peer, and our own handshakes follow.
+    // Its ack opens our router to the peer, and our own handshakes follow. The address is shadNet's, which a
+    // STUN ping can set for any name, so the player confirms it as for a request received directly.
     HandleControlPacket(addr, port, pkt);
 }
 

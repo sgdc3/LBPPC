@@ -1406,6 +1406,142 @@ static void net_log_install(void) {
     }
     printf("Net: message log %s\n",ok ? "on" : "not added (unexpected game code)");
 }
+/* lbppc: no scripts from other players. LBP3 loads a resource from a player in the session (P2P) or from the server;
+ * a script sent by a player is code the game runs, the way LittleBigPlanet's exploits were spread. Ported from the
+ * shadPS4 online patch (Patchwork 2's script block, CUSA00473 1.28; checked against the original bytes, else nothing
+ * changes):
+ * - The resource gate (0x239010) picks the player path when [peer manager 0x1315b18] is 1. At its lea rax (0x23905e)
+ *   a stub sends scripts (type 0xb at [job+0x24]) that have no GUID ([job+0xc] 0, asked for by hash only) to the
+ *   server path (0x2390ab, which reloads rax). A script with a GUID stays on P2P: the completion check below compares
+ *   what a player sends with the hash in the game's own file database, so only its own content can arrive.
+ * - The gate trusts the type a request declares, so a hash-only request of another type could still bring a script.
+ *   A transfer from a player ends in a hash check (0x92ab6a, transfer T in r14, its size in esi): there a stub fails
+ *   (0x92aba8, state 7, the bytes dropped) every hash-only transfer that starts with "FSH", a script's magic
+ *   (FSHb/FSHt). The failure block reads the job from r15 = T+0x10; nothing after it reads what the skipped code
+ *   would have computed. */
+static void script_guard_install(void) {
+    enum { GATE_SITE=0x23905e, GATE_BACK=0x239065, GATE_SERVER=0x2390ab, PEER_MANAGER=0x1315b18,
+           CHECK_SITE=0x92ab6a, CHECK_BACK=0x92ab71, CHECK_FAIL=0x92aba8 };
+    static const unsigned char gate_original[]={0x48,0x8d,0x05,0xb3,0xca,0x0d,0x01},   /* lea rax,[rip+...] */
+                               check_original[]={0x49,0x8b,0x3e,0x4c,0x8d,0x65,0x80},  /* mov rdi,[r14]; lea r12,[rbp-0x80] */
+                               server_original[]={0x4c,0x89,0xff,0x44,0x89,0xf6},     /* mov rdi,r15; mov esi,r14d */
+                               fail_original[]={0x49,0x8b,0x3f,0xbe,0x07,0x00,0x00,0x00}; /* mov rdi,[r15]; mov esi,7 */
+    if (memcmp(image+GATE_SITE,gate_original,sizeof(gate_original)) ||
+        memcmp(image+CHECK_SITE,check_original,sizeof(check_original)) ||
+        memcmp(image+GATE_SERVER,server_original,sizeof(server_original)) ||
+        memcmp(image+CHECK_FAIL,fail_original,sizeof(fail_original))) {
+        fputs("Script guard: unexpected game code, not applied (scripts from other players are loaded)\n",stderr);
+        return;
+    }
+    unsigned char *s=near_image_alloc();
+    if (!s) { fputs("Script guard: no memory near the image, not applied\n",stderr); return; }
+    /* Gate stub: a hash-only script goes to the server, anything else back to the gate with rax = peer manager. */
+    static const unsigned char gate[]={
+        0x80,0x7b,0x24,0x0b,                    /* cmp byte [rbx+0x24],0xb */
+        0x75,0x14,                              /* jne peer */
+        0x83,0x7b,0x0c,0x00,                    /* cmp dword [rbx+0xc],0 */
+        0x75,0x0e,                              /* jne peer */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0,      /* jmp [server] */
+        0x48,0xb8, 0,0,0,0,0,0,0,0,             /* peer: mov rax,peer manager */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0};     /* jmp [back] */
+    /* Check stub: the two moved instructions, then a hash-only transfer of 3 bytes or more starting with "FSH"
+       fails; anything else resumes the check. */
+    static const unsigned char check[]={
+        0x49,0x8b,0x3e,                         /* mov rdi,[r14] */
+        0x4c,0x8d,0x65,0x80,                    /* lea r12,[rbp-0x80] */
+        0x83,0xfe,0x03,                         /* cmp esi,3 */
+        0x72,0x29,                              /* jb resume */
+        0x49,0x8b,0x46,0x10,                    /* mov rax,[r14+0x10] */
+        0x83,0x78,0x0c,0x00,                    /* cmp dword [rax+0xc],0 */
+        0x75,0x1f,                              /* jne resume */
+        0x66,0x81,0x3f,0x46,0x53,               /* cmp word [rdi],'FS' */
+        0x75,0x18,                              /* jne resume */
+        0x80,0x7f,0x02,0x48,                    /* cmp byte [rdi+2],'H' */
+        0x75,0x12,                              /* jne resume */
+        0x4d,0x8d,0x7e,0x10,                    /* lea r15,[r14+0x10] */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0,      /* jmp [fail] */
+        0xff,0x25,0x00,0x00,0x00,0x00, 0,0,0,0,0,0,0,0};     /* resume: jmp [back] */
+    const uint64_t server=(uint64_t)(uintptr_t)(image+GATE_SERVER), peers=(uint64_t)(uintptr_t)(image+PEER_MANAGER),
+                   gate_back=(uint64_t)(uintptr_t)(image+GATE_BACK), fail=(uint64_t)(uintptr_t)(image+CHECK_FAIL),
+                   check_back=(uint64_t)(uintptr_t)(image+CHECK_BACK);
+    unsigned char *g=s, *c=s+64;
+    memcpy(g,gate,sizeof(gate));
+    memcpy(g+18,&server,8); memcpy(g+28,&peers,8); memcpy(g+42,&gate_back,8);
+    memcpy(c,check,sizeof(check));
+    memcpy(c+45,&fail,8); memcpy(c+59,&check_back,8);
+    int32_t rel=(int32_t)((intptr_t)g-(intptr_t)(image+GATE_SITE+5));
+    image[GATE_SITE]=0xe9; memcpy(image+GATE_SITE+1,&rel,4); image[GATE_SITE+5]=0x66; image[GATE_SITE+6]=0x90;
+    rel=(int32_t)((intptr_t)c-(intptr_t)(image+CHECK_SITE+5));
+    image[CHECK_SITE]=0xe9; memcpy(image+CHECK_SITE+1,&rel,4); image[CHECK_SITE+5]=0xcc; image[CHECK_SITE+6]=0xcc;
+    printf("Script guard: on, scripts from other players are refused (stubs at %p)\n",(void *)s);
+}
+/* lbppc: no joining without an invite. A party join request (the message dispatcher's handler at 0x3a3e60) takes the
+ * path that skips the game's own checks (0x3a3f73, DealWithRequestJoinParty with checks off) when 0x1b640 finds the
+ * sender in a list at [r14+0x1e0] that a forged "invite accepted" message fills, or when one of our own players is
+ * joining (r13b): the "force join" exploit that ended LittleBigPlanet's community servers. As Patchwork 2's
+ * LBP3ForceJoinPatch (and the shadPS4 online patch), the 34 bytes at 0x3a3f51 become: skip the checks only when one of
+ * our players is joining or the sender is a friend we invited (FindFriendDataEntry 0x38cd40 on the friends manager
+ * [0x130d5f0], the entry's +0xf0); anyone else goes through the checks (0x3a4434), which ask the host. r13 is
+ * 0 or 1 (0x3a3ea0, 0x3a3ed0); r12 and rax are not read after either path before being set again; rbx is the
+ * sender (0x3a3ee5). CUSA00473 1.28, checked against the original bytes, else nothing changes. */
+static void force_join_install(void) {
+    enum { SITE=0x3a3f51 };
+    static const unsigned char original[34]={
+        0x4d,0x8d,0xa6,0xe0,0x01,0x00,0x00, /* lea r12,[r14+0x1e0] */
+        0xe8,0xb3,0xdc,0xff,0xff,           /* call 0x3a1c10 */
+        0x4c,0x89,0xe7,                     /* mov rdi,r12 */
+        0x48,0x89,0xc6,                     /* mov rsi,rax */
+        0xe8,0xd8,0x76,0xc7,0xff,           /* call 0x1b640 */
+        0x44,0x08,0xe8,                     /* or al,r13b */
+        0x3c,0x01,                          /* cmp al,1 */
+        0x0f,0x85,0xc1,0x04,0x00,0x00};     /* jne 0x3a4434 (the checks) */
+    static const unsigned char patched[34]={
+        0x48,0x8b,0x3d,0x98,0x96,0xf6,0x00, /* mov rdi,[0x130d5f0] (friends manager) */
+        0x53, 0x5e,                         /* push rbx; pop rsi (the sender) */
+        0xe8,0xe1,0x8d,0xfe,0xff,           /* call FindFriendDataEntry (0x38cd40) */
+        0x48,0x85,0xc0,                     /* test rax,rax */
+        0x74,0x06,                          /* je +6 (no entry: eax = 0) */
+        0x8b,0x80,0xf0,0x00,0x00,0x00,      /* mov eax,[rax+0xf0] (we invited them) */
+        0x44,0x09,0xe8,                     /* or eax,r13d (one of our players) */
+        0x0f,0x84,0xc1,0x04,0x00,0x00};     /* je 0x3a4434 (the checks) */
+    if (memcmp(image+SITE,original,sizeof(original))) {
+        fputs("Join protection: unexpected game code, not applied (forged invites are accepted)\n",stderr);
+        return;
+    }
+    memcpy(image+SITE,patched,sizeof(patched));
+    puts("Join protection: party joins skip the game's checks only for friends we invited");
+}
+/* lbppc: the game encrypts and checks its P2P packets (XXTEA, 0x247a0) with one 16-byte key at 0xe1d2f0, the same in
+ * every copy of LBP3, so anyone could read or forge a session's packets. Online, the two calls that pass it (lea r8 at
+ * 0x3795e9, sending, and 0x37e94e, receiving: the only references to it) read a slot of ours instead, where the
+ * network library keeps a session key: a random one of our own, then the one agreed with the players we are
+ * connected to, each of whom proved who it is (lbppc_identity.cpp). Checked against the original bytes (CUSA00473
+ * 1.28), else nothing changes. */
+static void p2p_key_install(void) {
+    const char *online=getenv("BB_ONLINE");
+    if (!online || online[0]!='1') return;
+    static const struct { uint32_t site; unsigned char original[7]; } sites[]={
+        {0x3795e9,{0x4c,0x8d,0x05,0x00,0x3d,0xaa,0x00}}, /* lea r8,[0xe1d2f0] */
+        {0x37e94e,{0x4c,0x8d,0x05,0x9b,0xe9,0xa9,0x00}}, /* lea r8,[0xe1d2f0] */
+    };
+    for (size_t i=0;i<sizeof(sites)/sizeof(*sites);++i)
+        if (memcmp(image+sites[i].site,sites[i].original,7)) {
+            fputs("P2P key: unexpected game code, not applied (the game's own key is used)\n",stderr);
+            return;
+        }
+    unsigned char *slot=near_image_alloc();
+    if (!slot) { fputs("P2P key: no memory near the image, not applied (the game's own key is used)\n",stderr); return; }
+    /* Data, not code: never sealed, and not executable. */
+    stub_keep_writable(slot);
+    DWORD was;
+    VirtualProtect(slot,65536,PAGE_READWRITE,&was);
+    bbgpu_set_p2p_key_slot(slot); /* fills it before the game can read it */
+    for (size_t i=0;i<sizeof(sites)/sizeof(*sites);++i) {
+        const int32_t rel=(int32_t)((intptr_t)slot-(intptr_t)(image+sites[i].site+7));
+        memcpy(image+sites[i].site+3,&rel,4);
+    }
+    printf("P2P key: session keys, never the game's own (slot at %p)\n",(void *)slot);
+}
 /* lbppc: online play runs both players' worlds in lockstep and compares them ("The game diverged"). rcpps and rsqrtps
  * are approximations whose results differ between CPU makers, harmless on a console where every machine is alike:
  * online, each site in the game and its spu.prx (exact_math_sites.inc, CUSA00473 1.28; checked first, else nothing
@@ -2797,6 +2933,9 @@ int main(int argc, char **argv) {
     quit_menu_install();
     friend_log_install();
     net_log_install();
+    script_guard_install();
+    force_join_install();
+    p2p_key_install();
     sim_divide_install();
     hooks_install(getenv("BB_HOOK"));
     sync_log_install();

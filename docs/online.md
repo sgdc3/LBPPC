@@ -71,12 +71,42 @@ LittleBigPlanet's community servers were closed by a "force join" exploit: a for
 
 Anyone else's connection is dropped before it reaches the game, and the log says `Online: refused a connection from <name>`.
 
+Inside the game, a friend who is connected can still ask to join your party. The game lets a join skip its own
+checks only when one of your own players is joining or you invited that friend; anyone else goes through the checks,
+which ask you. This is Patchwork's fix for forged "invite accepted" messages; the log says `Join protection: party
+joins skip the game's checks only for friends we invited` at the start.
+
+A connection request carries its sender's name, written by the sender, and the address shadNet gives for a player
+can be set by anyone, so neither is trusted. Each PC makes its own key for the account the first time it signs in
+(kept in `user/online_keys`) and publishes the public part in the account's own storage on shadNet, which only that
+account can write (TUS, in LBPPC's own space: up to four PCs per account). A player's packets count only from an
+address where that player answered a challenge with a signature by one of those keys. Packets from your own network
+(private and link-local addresses, and Tailscale's 100.64.0.0/10) need no proof to be accepted. Both players need a
+LBPPC version with this check. The log says `Online: refused a connection named <name> (...)` with the reason.
+
+## Session keys
+
+The game encrypts and checks the packets players send each other with one key, the same in every copy of LBP3, so
+anyone could read or forge them. LBPPC never uses it: each game starts with a random key of its own, and once a
+player has proved who they are (above), the two games agree on one key, sent signed and encrypted for that player
+alone (X25519 and AES-GCM). The key already in use in a session wins, so a player who joins takes the session's key.
+A connection counts as made for the game only once both use the same key. The log says `P2P key: session keys` at
+the start.
+
+## No scripts from other players
+
+A script is code the game runs, and a script sent by another player is how LittleBigPlanet's exploits spread, friends
+included. LBPPC fetches every script asked for by its hash alone from the server, never from a player in the session,
+and drops any such transfer from a player that turns out to be a script. Scripts named by the game's own file database
+still come from players: the game checks their content against that database, so nothing else can arrive. The log
+says `Script guard: on` at the start. Ported from the shadPS4 online patch (Patchwork 2's script block).
+
 ## What LBPPC changes for online play
 
 - The game's server address goes to the configured Refresh server.
 - The PS4 game's PSN login (an authorization code) becomes a PS3-style ticket for the player, which custom servers read.
 - The key the game signs its requests and checks the server's replies with becomes `CustomServerDigest`, the community servers' key; replies are still checked.
-- Refresh disables two endpoints the PS3 game does without (`farc_hashes`, `t_conf`); the PS4 game needs them, so LBPPC answers them with empty, signed replies.
+- Refresh disables two endpoints the PS3 game does without (`farc_hashes`, `t_conf`); the PS4 game needs them, so LBPPC answers them with empty, signed replies when the server answers 410 (an LBPPC server answers them itself: `server/linux/refresh/lbppc-refresh-ps4.patch`, as for the two points below).
 - In co-op, Refresh lets only a room's host update it and refuses the guest's own updates (401). Sony's server never refused them, and a guest's game told "no" often enough would go back to its own Pod alone after a level, its Sackboys frozen. LBPPC answers those refusals with a signed success; the room keeps the host's data.
 - At sign-in the game sends the server its friend list (`npdata`) and takes the friends in the reply as the ones with LBP accounts, the only ones the Pod's friends list shows. Refresh replies with nothing, so LBPPC answers with the friends sent: every LBPPC friend has an account.
 - Without shadNet, PSN itself is stood in for locally: sign-in, empty friend and block lists.

@@ -58,10 +58,15 @@ this order:
 3. `refresh/lbppc-refresh-security.patch`: a game login only while its account is signed in to shadNet from the
    same address; website sign-up only for names that have an LBPPC (shadNet) account and that the blocked-names
    list allows. Needs the shadNet security patch (section 4) and the settings in [Security](#security).
+4. `refresh/lbppc-refresh-ps4.patch`: what LBP3 on PS4 needs from the server, which the PS3 game does without:
+   `farc_hashes` and `t_conf` answered with a success (an empty list and the telemetry file or nothing) instead of
+   410, `npdata` answered with the posted friends who have an account (the Pod's friends list shows only those),
+   and a co-op guest's `/match` room update answered with a success that leaves the host's room as it is, instead
+   of 401. LBPPC answers these itself when a server doesn't.
 
 ```bash
 git clone https://github.com/LittleBigRefresh/Refresh /opt/refresh-src && cd /opt/refresh-src && git checkout 4060ec4
-for p in lbppc-refresh lbppc-refresh-asset-types lbppc-refresh-security; do git apply $KIT/refresh/$p.patch; done
+for p in lbppc-refresh lbppc-refresh-asset-types lbppc-refresh-security lbppc-refresh-ps4; do git apply $KIT/refresh/$p.patch; done
 dotnet publish Refresh.GameServer -c Release -o /opt/refresh-build
 sudo -u lbppc mkdir -p /opt/lbppc/refresh
 sudo cp -r /opt/refresh-build/. /opt/lbppc/refresh/
@@ -103,8 +108,9 @@ at commit 75edbf0 with both patches applied (`git apply`, in this order), and us
    in-game friends list needs. UDP 31314 must be open for the relay.
 2. `shadnet/patches/lbppc-shadnet-security.patch`: what Refresh's login check asks (`/admin/v1/sessions/check`,
    `/admin/v1/names/check`, only from this machine with the AdminApiKey), the player's real address through nginx
-   (PROXY protocol), the blocked-names list, limits on password guessing and sign-ups, and 8-character passwords.
-   See [Security](#security).
+   (PROXY protocol), the blocked-names list, limits on password guessing and sign-ups, 8-character passwords,
+   STUN pings taken only from the account's own session, and players' addresses given only to their friends and
+   room mates. See [Security](#security).
 
 ## 5. Services
 
@@ -156,6 +162,7 @@ server's configuration, its patches or its network setup.
 | Refresh, website sign-up | a name, email and password | only for names with a shadNet account, which the launcher creates first, and that the list allows |
 | shadNet admin API | the AdminApiKey | it listens on 127.0.0.1 only; the session and name checks also refuse anything not from this machine |
 | shadNet, player address | the PROXY line nginx sends | only from 127.0.0.1 (nginx); port 31316 is closed in the firewall |
+| shadNet, where a player is (STUN) | a UDP ping that names an account | only with the secret that account's session got at login (LBPPC clients), or from the address it signed in from (other clients); dropped at sign-out, and given only to that player's friends and players in a room with it (the security patch) |
 
 ### Setting it up
 

@@ -30,6 +30,9 @@ void TerminateSig1(NpSignaling::OrbisNpSignalingConnectionId conn_id);
 // shadNet's notice that a player wants to connect (addr/port network order), handled like
 // that player's activation request, which our router drops until we have sent to them.
 void HandlePeerConnectRequest(std::string_view peer_online_id, u32 addr, u16 port);
+// lbppc: the 16 bytes the game's P2P cipher reads its key from (probe.c redirects the game there); from now on
+// it holds a session key agreed with the verified peers, never the game's own (lbppc_identity.h).
+void SetP2PKeySlot(u8* slot);
 
 void StartMatching2(NpMatching2::ContextObject& ctx);
 void StopMatching2(NpMatching2::ContextObject& ctx, s32 error_code);

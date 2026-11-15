@@ -33,6 +33,7 @@ shut down.
 - **Online co-op** with your friends, through a relay when your connections can't reach each other directly.
 - **Join protection.** Only your friends can join your game. This closes the "force join" exploit that ended
   LittleBigPlanet's community servers.
+- **No scripts from other players.** Scripts are fetched from the server, never from a player in your game.
 - **Friends in the launcher:** send and accept requests, and see who's online. Friends playing LBPPC show in the
   Pod's friends list too.
 

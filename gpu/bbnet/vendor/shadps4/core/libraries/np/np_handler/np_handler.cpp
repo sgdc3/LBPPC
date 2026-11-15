@@ -11,6 +11,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/net/net_p2p.h"
 #include "core/libraries/net/net_upnp.h"
+#include "core/libraries/np/lbppc_identity.h"
 #include "core/libraries/np/np_error.h"
 #include "core/libraries/np/np_handler/np_handler.h"
 #include "core/libraries/np/np_manager.h"
@@ -356,6 +357,9 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
 
     LOG_INFO(NpHandler, "user_id={} signed in npid='{}' accountId={}", user_id, npid,
              client->GetUserId());
+    // lbppc: this PC's identity key, published now that the session is up (lbppc_identity.h). Not from
+    // OnLoginResult: that runs before this client is in m_clients.
+    LbppcIdentity::OnSignedIn(client);
 
     Net::UPnPClient::Instance().SetP2PFeaturesEnabled(client->IsMatching2Enabled());
     if (client->IsMatching2Enabled() && EmulatorSettings.IsUPnPEnabled()) {
@@ -757,6 +761,10 @@ std::string NpHandler::GetNpCommId(s32 service_label) const {
 
 void NpHandler::OnAsyncReply(s32 user_id, ShadNet::CommandType cmd, u64 pkt_id,
                              ShadNet::ErrorType error, const std::vector<u8>& body) {
+    // lbppc: our own TUS requests (identity keys), not the game's.
+    if (LbppcIdentity::OnAsyncReply(cmd, pkt_id, error, body)) {
+        return;
+    }
     const auto cmd_val = static_cast<u16>(cmd);
     if (cmd_val >= 100 && cmd_val <= 200) {
         NpMatching2::OnMatchingReply(cmd, pkt_id, error, body);
